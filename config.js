@@ -5,6 +5,6 @@
 window.APP_CONFIG = {
   COMPANY_NAME: 'RFQ Hub',
   CURRENCY: 'RM',
-  API_URL: '',
+  API_URL: 'https://script.google.com/macros/s/AKfycbzqnQbtbUPXBPh10b68hOGaZ-wySK29SkNJ3WgHgsDwfbIbeOALHX39hMYP7kks6Eab/exec',
   GOOGLE_CLIENT_ID: '565076969693-m0aeshobnlvb0p542p3flt0g6cudjopi.apps.googleusercontent.com',
 };
