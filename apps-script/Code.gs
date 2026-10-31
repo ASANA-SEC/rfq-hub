@@ -32,8 +32,9 @@ const TABLES = {
   items: ['id', 'sectionId', 'title', 'data', 'editors', 'collaborators', 'files', 'stageChangedAt', 'createdBy', 'createdAt', 'updatedAt'],
   comments: ['id', 'sectionId', 'itemId', 'kind', 'author', 'text', 'createdAt', 'updatedAt'],
   calendar: ['id', 'eventId', 'updatedAt'], // id = item id
+  sourcing: ['id', 'sectionId', 'status', 'suppliers', 'emailSubject', 'deliveryLocation', 'approvedBy', 'approvedAt', 'createdBy', 'createdAt', 'updatedAt'], // id = item id
 };
-const JSON_COLS = ['fields', 'data', 'editors', 'collaborators', 'files'];
+const JSON_COLS = ['fields', 'data', 'editors', 'collaborators', 'files', 'suppliers'];
 const BOOL_COLS = ['active', 'archived'];
 const NUM_COLS = ['order'];
 const READ_ONLY_ACTIONS = ['bootstrap', 'item.file'];

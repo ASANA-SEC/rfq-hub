@@ -579,3 +579,14 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 .arc-sum b { font-variant-numeric: tabular-nums; }
 .banner.danger { background: var(--crit-soft); border-color: color-mix(in srgb, var(--crit) 35%, transparent); }
 .banner.danger b { color: var(--crit); }
+
+/* RFQ sourcing */
+.src-pick { display: flex; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
+.src-pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); font: 13px/1.5 var(--font); }
+.src-files { margin: 0; padding-left: 18px; }
+.src-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.src-sup { min-width: 980px; }
+.src-sup input, .src-sup select { width: 100%; min-width: 90px; height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--ink); font: inherit; }
+.src-sup input:disabled, .src-sup select:disabled { background: var(--surface-2); color: var(--ink-2); }
+.src-sup td a { font-size: 12px; }
+.src-actions { margin-top: 10px; }

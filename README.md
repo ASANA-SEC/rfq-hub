@@ -42,6 +42,14 @@ Google 登录的 Client ID **沿用 Project Hub 那个**（同一个网域 asana
 > 以后 Code.gs 或 core.js 有更新，两个文件都要重新贴，再 **Deploy → Manage deployments → ✏️ → New version**，网址不变。
 > Google Sheet 的分页保持普通范围，**不要**转成 Table。
 
+## RFQ Sourcing
+
+左侧 **RFQ Sourcing**：选 Section 和栏（默认 Pending）→ 打开任务 → 填邮件标题和交货地点 → 增删供应商 → **Approve final list**。批准后再保存修改，名单会退回草稿。只有 Section Manager 和 Super admin 能批准。
+
+这个页面需要后端的 `sourcing` 分页。更新步骤：把 `apps-script/Code.gs` 和 `assets/core.js`（贴成 `Core`）重新贴到 Apps Script → 跑一次 `setup()` → **Deploy → Manage deployments → ✏️ → New version**。
+
+> 这个仓库是公开的。CC 邮箱、邮件签名和真实 RFQ 内容不要写进代码。
+
 ## 本机测试
 
 ```bash

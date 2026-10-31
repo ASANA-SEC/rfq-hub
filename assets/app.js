@@ -289,6 +289,7 @@
       S.items = res.items || [];
       S.comments = res.comments || [];
       S.access = res.access || [];
+      S.sourcing = res.sourcing || [];
       if (!S.loaded) { S.loaded = true; renderShell(); }
       render();
     } catch (e) {
@@ -305,6 +306,7 @@
     performance: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
     sections: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M17.5 14v7M14 17.5h7"/>',
     team: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4-6"/>',
+    sourcing: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
   };
   const svg = (k) => `<svg viewBox="0 0 24 24">${ICON[k]}</svg>`;
   function secMark(s) { return `<span class="smark" style="background:hsl(${hue(s.id)} 38% 42%)">${esc((s.name || '?').trim()[0].toUpperCase())}</span>`; }
@@ -438,7 +440,8 @@
     const late = S.items.filter((it) => { const s = sectionOf(it); if (!s || !involved(it)) return false; const d = dueInfo(s, it); return d && d.sev === 2; }).length;
     const link = (href, key, label, icon, count) => `<a href="${href}" data-nav="${key}">${icon}<span class="lbl">${label}</span>${count ? `<span class="count">${count}</span>` : ''}</a>`;
     let html = link('#dashboard', 'dashboard', 'Dashboard', svg('dashboard')) + link('#mywork', 'mywork', 'My Work', svg('mywork'), late) + link('#calendar', 'calendar', 'Calendar', svg('calendar'))
-      + (canPerf() ? link('#performance', 'performance', 'Team performance', svg('performance')) : '');
+      + (canPerf() ? link('#performance', 'performance', 'Team performance', svg('performance')) : '')
+      + (srcSections().length ? link('#sourcing', 'sourcing', 'RFQ Sourcing', svg('sourcing')) : '');
     const secs = liveSections();
     if (secs.length) html += '<div class="nav-h">Sections</div>' + secs.map((s) => link('#s/' + s.id, 's/' + s.id, esc(s.name), secMark(s))).join('');
     if (S.me.isSuper) html += '<div class="nav-h">Super admin</div>' + link('#sections', 'sections', 'Manage sections', svg('sections')) + link('#team', 'team', 'Users &amp; access', svg('team'));
@@ -470,6 +473,7 @@
     else if (r.view === 'mywork' || r.view === 'item') { html = viewMyWork(); nav = 'mywork'; title = 'My Work'; }
     else if (r.view === 'calendar') { html = viewCalendar(); title = 'Calendar'; }
     else if (r.view === 'performance') { html = viewPerformance(); title = 'Team performance'; }
+    else if (r.view === 'sourcing') { html = r.id ? viewSourcingTask(r.id) : viewSourcing(); title = 'RFQ Sourcing'; }
     else if (r.view === 'sections') { html = viewSections(); title = 'Manage sections'; }
     else if (r.view === 'team') { html = viewTeam(); title = 'Users & access'; }
     else { html = viewDashboard(); nav = 'dashboard'; }
@@ -1562,6 +1566,172 @@
 
   // ------------------------------------------------------------ super admin: sections
 
+  // ------------------------------------------------------------ RFQ sourcing
+
+  const SUPPLIER_TYPES = ['Manufacturer', 'Distributor', 'Stockist', 'Agent', 'Supplier'];
+  const srcState = { sectionId: '', stage: '', drafts: {} };
+  const srcRec = (id) => (S.sourcing || []).find((r) => r.id === id);
+  const stageHasPending = (s) => stageF(s) && (stageF(s).options || []).some((o) => /^pending\s*(\(|$)/i.test(o.label));
+  const srcSections = () => liveSections().filter((s) => stageF(s) && (s.template === 'rfqs' || stageHasPending(s)));
+
+  function srcStage(s) {
+    const opts = stageF(s).options || [];
+    if (opts.some((o) => o.value === srcState.stage)) return srcState.stage;
+    const pick = opts.find((o) => /^pending$/i.test(o.label)) || opts.find((o) => /sourcing/i.test(o.label)) || opts[0];
+    return pick ? pick.value : '';
+  }
+
+  /** What the RFQ task asks for, without the internal DUE line at the top of the notes. */
+  function rfqItemsText(it) {
+    const notes = String((it.data || {}).notes || '');
+    return notes.split(/\r?\n/).filter((l) => !/^\s*DUE\s*:/i.test(l)).join('\n').trim();
+  }
+
+  function srcClosing(it) {
+    const s = sectionOf(it);
+    const f = s && dueF(s);
+    return (f && val(it, f)) || '';
+  }
+
+  /** "5 Nov 2026 at 11:00 PM", read straight from the stored Malaysia-time text. */
+  function closingForEmail(v) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(v || '');
+    if (!m) return '';
+    const date = +m[3] + ' ' + MON[+m[2] - 1] + ' ' + m[1];
+    if (!m[4]) return date;
+    const h = +m[4];
+    return date + ' at ' + (h % 12 || 12) + ':' + m[5] + (h < 12 ? ' AM' : ' PM');
+  }
+
+  function rfqEmailBody(it, location) {
+    const place = location ? (/malaysia/i.test(location) ? location : location + ', Malaysia') : '[delivery location]';
+    return ['Dear Sir / Madam,', '', 'We trust this email finds you well.', '', 'Kindly submit your formal quotation for the item specified Below:', '',
+      rfqItemsText(it), '',
+      'For completeness of evaluation, please ensure that your quotation includes the following details:', '',
+      '•  Technical datasheet for the quoted item',
+      '•  Confirmed delivery lead time (please state possible downtime for holiday)',
+      '•  Estimated net and gross weight (for logistics and freight assessment)',
+      '•  Relevant product certifications, where applicable',
+      '•  Optional Seafreight, courier or freight charges to ' + place + '.', '',
+      'Please note that quotations should be valid and submitted no later than ' + (closingForEmail(srcClosing(it)) || '[closing date]') + ' (Malaysia time[UTC +8]).', '',
+      'Warmest Regards,'].join('\n');
+  }
+
+  function srcDraft(id) {
+    if (!srcState.drafts[id]) {
+      const r = srcRec(id) || {};
+      srcState.drafts[id] = { suppliers: (r.suppliers || []).map((x) => ({ ...x })), emailSubject: r.emailSubject || '', deliveryLocation: r.deliveryLocation || '', dirty: false };
+    }
+    return srcState.drafts[id];
+  }
+
+  function srcStatusChip(r) {
+    if (r && r.status === 'approved') return '<span class="chip ok">List approved</span>';
+    if (r && (r.suppliers || []).length) return '<span class="chip warn">Waiting for approval</span>';
+    return '<span class="chip">No suppliers yet</span>';
+  }
+
+  function viewSourcing() {
+    const secs = srcSections();
+    if (!secs.length) return '<div class="empty-state"><b>No RFQ sections you can open</b></div>';
+    const s = secs.find((x) => x.id === srcState.sectionId) || secs[0];
+    const stage = srcStage(s);
+    const list = S.items.filter((it) => it.sectionId === s.id && (it.data || {})[s.stageField] === stage)
+      .sort((a, b) => (srcClosing(a) || '9999').localeCompare(srcClosing(b) || '9999'));
+    const rows = list.map((it) => {
+      const r = srcRec(it.id);
+      return `<tr>
+        <td class="title"><a href="#sourcing/${esc(it.id)}">${esc(it.title)}</a></td>
+        <td class="nw">${esc((it.data || {}).rfqNo || '—')}</td>
+        <td class="nw">${esc(fmtDT(srcClosing(it)))}</td>
+        <td class="r">${(it.files || []).length}</td>
+        <td class="r">${r ? (r.suppliers || []).length : 0}</td>
+        <td class="nw">${srcStatusChip(r)}</td></tr>`;
+    }).join('');
+    return `
+      <div class="head"><div><h1>RFQ Sourcing</h1><div class="sub">Pick a section, open a task, then review and approve its supplier list.</div></div></div>
+      <div class="toolbar src-pick">
+        <label class="fld"><span>Section</span><select id="srcSection">${secs.map((x) => `<option value="${esc(x.id)}"${x.id === s.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+        <label class="fld"><span>Column</span><select id="srcStage">${(stageF(s).options || []).map((o) => `<option value="${esc(o.value)}"${o.value === stage ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>
+      </div>
+      ${list.length ? `<div class="tablewrap"><table class="t"><thead><tr><th>Task</th><th>RFQ no.</th><th>Closing</th><th class="r">Attachments</th><th class="r">Suppliers</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<div class="empty-state"><b>No tasks in this column</b></div>'}`;
+  }
+
+  function supplierRow(x, i, locked) {
+    const dis = locked ? ' disabled' : '';
+    const type = x.type && !SUPPLIER_TYPES.includes(x.type) ? [x.type, ...SUPPLIER_TYPES] : SUPPLIER_TYPES;
+    return `<tr data-sup="${i}">
+      <td><input name="company" aria-label="Company" value="${esc(x.company || '')}"${dis}></td>
+      <td><input name="email" type="email" aria-label="Email" value="${esc(x.email || '')}"${dis}></td>
+      <td><select name="type" aria-label="Type"${dis}><option value=""></option>${type.map((t) => `<option${t === x.type ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></td>
+      <td><input name="country" aria-label="Country" value="${esc(x.country || '')}"${dis}></td>
+      <td><input name="source" type="url" aria-label="Source link" value="${esc(x.source || '')}"${dis}>${/^https?:\/\//i.test(x.source || '') ? ` <a href="${esc(x.source)}" target="_blank" rel="noopener">Open</a>` : ''}</td>
+      <td><input name="note" aria-label="Note" value="${esc(x.note || '')}"${dis}></td>
+      <td>${locked ? '' : `<button type="button" class="ibtn" data-act="src-del" data-i="${i}" aria-label="Remove supplier">×</button>`}</td></tr>`;
+  }
+
+  function viewSourcingTask(id) {
+    const it = S.items.find((x) => x.id === id);
+    const s = it && sectionOf(it);
+    if (!s) return '<div class="empty-state"><b>This task is not available</b><a href="#sourcing">Back to RFQ Sourcing</a></div>';
+    const d = srcDraft(id);
+    const r = srcRec(id);
+    const editable = can.editItem(ctx(), it, s);
+    const approver = S.me.isSuper || myLevel(s) === 'manager';
+    const closing = srcClosing(it);
+    const past = closing && hoursUntil(closing) < 0;
+    const items = rfqItemsText(it);
+    return `
+      <div class="head"><div><a href="#sourcing">‹ RFQ Sourcing</a><h1>${esc(it.title)}</h1>
+        <div class="sub">${esc(s.name)} · ${esc((it.data || {}).rfqNo || 'No RFQ no.')} · Closing ${esc(fmtDT(closing))} ${past ? '<span class="chip crit">Closing date has passed</span>' : ''}</div></div>
+        <div class="toolbar">${srcStatusChip(r)}<button class="btn" data-act="open" data-id="${esc(it.id)}">Open task</button></div></div>
+      <div class="group"><h2>Items to quote</h2><pre class="src-pre">${items ? esc(items) : '<span class="muted">The Notes of this task are empty.</span>'}</pre></div>
+      <div class="group"><h2>Attachments</h2>${(it.files || []).length ? `<ul class="src-files">${it.files.map((f) => `<li>${esc(f.name)}</li>`).join('')}</ul>` : '<p class="muted">None on this task.</p>'}</div>
+      <form id="srcForm" data-id="${esc(id)}" novalidate>
+        <div class="group"><h2>Email details</h2><div class="src-fields">
+          <label class="fld"><span>Email title</span><input name="emailSubject" value="${esc(d.emailSubject)}"${editable ? '' : ' disabled'}></label>
+          <label class="fld"><span>Delivery location</span><input name="deliveryLocation" value="${esc(d.deliveryLocation)}"${editable ? '' : ' disabled'}></label>
+        </div></div>
+        <div class="group"><h2>Suppliers (${d.suppliers.length})</h2>
+          <div class="tablewrap"><table class="t src-sup"><thead><tr><th>Company</th><th>Email</th><th>Type</th><th>Country</th><th>Source link</th><th>Note</th><th></th></tr></thead>
+            <tbody>${d.suppliers.map((x, i) => supplierRow(x, i, !editable)).join('') || '<tr><td colspan="7" class="muted">No suppliers yet.</td></tr>'}</tbody></table></div>
+          ${editable ? `<div class="form-actions src-actions"><button type="button" class="btn" data-act="src-add">+ Add supplier</button><span class="sp"></span>
+            <button type="button" class="btn" data-act="src-save" id="srcSave">Save draft</button>
+            ${approver ? `<button type="button" class="btn primary" data-act="src-approve" id="srcApprove">Approve final list</button>` : '<span class="muted">A section manager approves this list.</span>'}</div>` : ''}
+          ${r && r.status === 'approved' ? `<p class="muted">Approved by ${esc(userName(r.approvedBy))} on ${esc(fmtDT(r.approvedAt))}. Saving a change returns the list to draft.</p>` : ''}
+        </div>
+      </form>
+      <details class="group"><summary>Email preview</summary><pre class="src-pre">${esc(rfqEmailBody(it, d.deliveryLocation))}</pre><p class="muted">The signature and CC list are added when the email is drafted. Nothing is sent from this page.</p></details>`;
+  }
+
+  /** Copy what is on screen into the draft, so a background refresh or added row keeps it. */
+  function srcSync() {
+    const form = $('#srcForm');
+    if (!form) return null;
+    const d = srcDraft(form.dataset.id);
+    d.emailSubject = form.elements.emailSubject.value;
+    d.deliveryLocation = form.elements.deliveryLocation.value;
+    d.suppliers = [...form.querySelectorAll('tr[data-sup]')].map((tr) => {
+      const v = (n) => tr.querySelector(`[name="${n}"]`).value;
+      return { company: v('company'), email: v('email'), type: v('type'), country: v('country'), source: v('source'), note: v('note') };
+    });
+    return d;
+  }
+
+  async function srcSubmit(action) {
+    const form = $('#srcForm');
+    const id = form.dataset.id;
+    const d = srcSync();
+    try {
+      const res = await API.call(action, { itemId: id, suppliers: d.suppliers, emailSubject: d.emailSubject, deliveryLocation: d.deliveryLocation });
+      S.sourcing = (S.sourcing || []).filter((r) => r.id !== id).concat([res.sourcing]);
+      delete srcState.drafts[id];
+      toast(action === 'sourcing.approve' ? 'Supplier list approved' : 'Draft saved');
+      render();
+    } catch (e) { handleError(e); }
+  }
+
   function viewSections() {
     if (!S.me.isSuper) return '<div class="empty-state"><b>Super admin only</b></div>';
     const live = liveSections();
@@ -2415,6 +2585,10 @@
         render();
         break;
       }
+      case 'src-add': { const dr = srcSync(); dr.suppliers.push({}); render(); break; }
+      case 'src-del': { const dr = srcSync(); dr.suppliers.splice(Number(d.i), 1); render(); break; }
+      case 'src-save': srcSubmit('sourcing.save'); break;
+      case 'src-approve': srcSubmit('sourcing.approve'); break;
       case 'refresh': loadData().then(() => toast('Up to date')); break;
       case 'signout': signOut(); break;
       case 'demo-login':
@@ -2549,6 +2723,8 @@
 
   document.addEventListener('change', (e) => {
     const t = e.target;
+    if (t.id === 'srcSection') { srcState.sectionId = t.value; srcState.stage = ''; render(); return; }
+    if (t.id === 'srcStage') { srcState.stage = t.value; render(); return; }
     if (t.id === 'fileInput' && t.files && t.files[0]) { uploadFile(t.files[0]); return; }
     if (t.id === 'arcFile' && t.files && t.files[0]) { readArchiveFile(t.files[0]); return; }
     if (t.dataset.access) {
@@ -2603,6 +2779,7 @@
   let searchTimer;
   document.addEventListener('input', (e) => {
     const t = e.target;
+    if (t.closest('#srcForm')) { srcSync(); return; }
     if (t.matches('[data-pick-filter]')) {
       const q = t.value.toLowerCase();
       t.closest('.pick-b').querySelectorAll('.prow').forEach((r) => { r.hidden = q && !r.textContent.toLowerCase().includes(q); });
