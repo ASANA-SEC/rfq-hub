@@ -207,40 +207,6 @@ var Core = (function () {
     return { id: u.id, name: u.name || u.id, isSuper: isSuper };
   }
 
-  // ------------------------------------------------------------ RFQ sourcing
-
-  var MAX_SUPPLIERS = 80;
-
-  /** The supplier list of one RFQ task: blank rows dropped, emails checked, each email only once. */
-  function cleanSuppliers(list) {
-    function txt(v, max) { return String(v == null ? '' : v).trim().slice(0, max); }
-    var seen = {};
-    var out = [];
-    arr(list).forEach(function (r) {
-      r = r || {};
-      var row = {
-        company: txt(r.company, 200), email: txt(r.email, 200).toLowerCase(), type: txt(r.type, 40),
-        country: txt(r.country, 80), source: txt(r.source, 500), note: txt(r.note, 300),
-      };
-      if (!row.company && !row.email) return;
-      if (!EMAIL_RE.test(row.email)) throw fail('BAD_REQUEST', 'Check the email for ' + (row.company || 'this supplier') + '.');
-      if (seen[row.email]) return;
-      seen[row.email] = true;
-      if (row.source && !/^https?:\/\//i.test(row.source)) row.source = '';
-      out.push(row);
-    });
-    if (out.length > MAX_SUPPLIERS) throw fail('BAD_REQUEST', 'Keep the list to ' + MAX_SUPPLIERS + ' suppliers or fewer.');
-    return out;
-  }
-
-  // The sourcing tab only exists after setup() is run again, and the rest of the app must keep working until then.
-  function sourcingRows(store) {
-    try { return store.all('sourcing'); } catch (e) { return []; }
-  }
-  function dropSourcing(store, fn) {
-    try { store.delWhere('sourcing', fn); } catch (e) { /* tab not created yet */ }
-  }
-
   // ------------------------------------------------------------ actions
 
   function handle(store, me, action, p) {
@@ -293,7 +259,6 @@ var Core = (function () {
             .map(function (s) { var c = clone(s); c.myLevel = level(ctx, s.id); return c; }),
           items: items,
           comments: store.all('comments').filter(function (c) { return vis[c.itemId]; }),
-          sourcing: sourcingRows(store).filter(function (r) { return vis[r.id]; }),
           // Own rows, plus everyone's rows on sections this person manages (managers see who is on their team).
           access: me.isSuper ? access : access.filter(function (a) {
             return a.userId === me.id || (live(secById[a.sectionId]) && level(ctx, a.sectionId) === 'manager');
@@ -340,29 +305,7 @@ var Core = (function () {
         if (!can.deleteItem(ctx, it3, getSection(it3.sectionId))) throw fail('FORBIDDEN', 'Only section editors and managers can delete items.');
         store.del('items', it3.id);
         store.delWhere('comments', function (c) { return c.itemId === it3.id; });
-        dropSourcing(store, function (r) { return r.id === it3.id; });
         return { id: it3.id };
-      }
-
-      case 'sourcing.save':
-      case 'sourcing.approve': {
-        // Saving any change puts the list back to draft, so an approval always covers exactly what was reviewed.
-        var it7 = getItem(p.itemId);
-        var s7 = getSection(it7.sectionId);
-        if (!can.editItem(ctx, it7, s7)) throw fail('FORBIDDEN', 'You can view this RFQ but not change its supplier list.');
-        var approving = action === 'sourcing.approve';
-        if (approving && !(me.isSuper || level(ctx, s7.id) === 'manager')) throw fail('FORBIDDEN', 'Only a section manager or super admin can approve the supplier list.');
-        var suppliers = cleanSuppliers(p.suppliers);
-        if (approving && !suppliers.length) throw fail('BAD_REQUEST', 'Add at least one supplier before approving.');
-        var prior = store.all('sourcing').filter(function (r) { return r.id === it7.id; })[0];
-        var rec = {
-          id: it7.id, sectionId: s7.id, status: approving ? 'approved' : 'draft', suppliers: suppliers,
-          emailSubject: String(p.emailSubject || '').trim().slice(0, 300), deliveryLocation: String(p.deliveryLocation || '').trim().slice(0, 200),
-          approvedBy: approving ? me.id : '', approvedAt: approving ? now : '',
-          createdBy: prior ? prior.createdBy : me.id, createdAt: prior ? prior.createdAt : now, updatedAt: now,
-        };
-        if (prior) store.save('sourcing', rec); else store.insert('sourcing', rec);
-        return { sourcing: rec };
       }
 
       case 'item.upload': {
@@ -439,7 +382,6 @@ var Core = (function () {
         store.delWhere('comments', function (c) { return c.sectionId === ds.id || gone[c.itemId]; });
         store.delWhere('items', function (it) { return it.sectionId === ds.id; });
         store.delWhere('access', function (a) { return a.sectionId === ds.id; });
-        dropSourcing(store, function (r) { return r.sectionId === ds.id; });
         store.del('sections', ds.id);
         return { id: ds.id, itemIds: Object.keys(gone) };
       }

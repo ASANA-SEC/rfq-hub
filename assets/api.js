@@ -176,12 +176,7 @@
       award(3, 'Power cables — awaiting result', 'i_rq3', 'i_pp2', 'awaiting', 0, '', '', '', null, 18, 12),
       award(4, 'Pipe spools Phase 2 — negotiation', 'i_rq4', 'i_pp3', 'negotiation', 0, '', '', '', null, 7, 3),
     );
-    items.push(item('i_rq9', 's_rfqs', 'Supply of UV lamps and ballasts for example plant', {
-      rfqNo: 'RFQ-DEMO-009', client: 'Client F (example)', category: 'supply', owner: H, stage: 'sourcing', priority: 'normal', submissionMode: 'email', estValue: 0,
-      receivedDate: day(-1), siteVisit: '', closingDate: day(7).slice(0, 10) + 'T17:00', docsLink: '',
-      notes: 'DUE: example client deadline\n\n1. LAMP, UV, EXAMPLE MODEL\nPOWER RATING: 39 W\nQTY: 4 PC\n\n2. BALLAST, ELECTRONIC, EXAMPLE MODEL\nVOLTAGE RATING: 220-240 VAC\nQTY: 2 EA',
-    }, [H], [], 1));
-    return { users, sections, access, items, comments: [], sourcing: [] };
+    return { users, sections, access, items, comments: [] };
   }
 
   function demoStore() {
@@ -190,7 +185,7 @@
       if (db) return db;
       try { db = JSON.parse(localStorage.getItem(DEMO_KEY) || 'null'); } catch (e) { db = null; }
       if (!db || !Array.isArray(db.sections)) db = seed();
-      ['users', 'sections', 'access', 'items', 'comments', 'sourcing'].forEach((t) => { if (!Array.isArray(db[t])) db[t] = []; });
+      ['users', 'sections', 'access', 'items', 'comments'].forEach((t) => { if (!Array.isArray(db[t])) db[t] = []; });
       persist();
       return db;
     }
