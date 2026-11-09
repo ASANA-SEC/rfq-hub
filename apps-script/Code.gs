@@ -26,7 +26,7 @@ const TIMED_EVENT_MINUTES = 30;
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 const TABLES = {
-  users: ['id', 'name', 'active', 'createdBy', 'createdAt', 'updatedAt'],
+  users: ['id', 'name', 'active', 'createdBy', 'createdAt', 'updatedAt', 'color'],
   sections: ['id', 'name', 'template', 'order', 'fields', 'stageField', 'archived', 'createdBy', 'createdAt', 'updatedAt'],
   access: ['id', 'sectionId', 'userId', 'level', 'createdBy', 'createdAt', 'updatedAt'],
   items: ['id', 'sectionId', 'title', 'data', 'editors', 'collaborators', 'files', 'stageChangedAt', 'createdBy', 'createdAt', 'updatedAt'],

@@ -188,6 +188,12 @@ var Core = (function () {
     return out;
   }
 
+  /** A user's colour: '#rrggbb' chosen by a super admin, or '' for the automatic colour. */
+  function cleanColor(v) {
+    var c = String(v || '').trim().toLowerCase();
+    return /^#[0-9a-f]{6}$/.test(c) ? c : '';
+  }
+
   function people(list, userIds) {
     var seen = {};
     return arr(list).map(function (x) { return String(x || '').toLowerCase(); })
@@ -267,7 +273,7 @@ var Core = (function () {
         items.forEach(function (it) { vis[it.id] = true; withItems[it.sectionId] = true; });
         return {
           me: me,
-          users: users.map(function (u) { return { id: u.id, name: u.name || '', active: u.active !== false }; }),
+          users: users.map(function (u) { return { id: u.id, name: u.name || '', active: u.active !== false, color: cleanColor(u.color) }; }),
           sections: sections
             .filter(function (s) { return me.isSuper || (live(s) && (rank(level(ctx, s.id)) >= 1 || withItems[s.id])); })
             .sort(function (a, b) { return (Number(a.order) || 0) - (Number(b.order) || 0); })
@@ -513,9 +519,9 @@ var Core = (function () {
         var id = String(p.id || '').trim().toLowerCase();
         if (!EMAIL_RE.test(id)) throw fail('BAD_REQUEST', 'Enter a valid Google email.');
         if (users.some(function (u) { return u.id === id; })) throw fail('BAD_REQUEST', id + ' already has an account.');
-        var u = { id: id, name: String(p.name || '').trim().slice(0, 80), active: p.active !== false, createdBy: me.id, createdAt: now, updatedAt: now };
+        var u = { id: id, name: String(p.name || '').trim().slice(0, 80), active: p.active !== false, color: cleanColor(p.color), createdBy: me.id, createdAt: now, updatedAt: now };
         store.insert('users', u);
-        return { user: { id: u.id, name: u.name, active: u.active } };
+        return { user: { id: u.id, name: u.name, active: u.active, color: u.color } };
       }
 
       case 'user.update': {
@@ -524,13 +530,14 @@ var Core = (function () {
         if (!u2) throw fail('NOT_FOUND', 'This account no longer exists.');
         var up = p.patch || {};
         if ('name' in up) u2.name = String(up.name || '').trim().slice(0, 80);
+        if ('color' in up) u2.color = cleanColor(up.color);
         if ('active' in up) {
           if (isSuperId(u2.id) && !up.active) throw fail('BAD_REQUEST', 'A super admin account cannot be switched off.');
           u2.active = !!up.active;
         }
         u2.updatedAt = now;
         store.save('users', u2);
-        return { user: { id: u2.id, name: u2.name, active: u2.active !== false } };
+        return { user: { id: u2.id, name: u2.name, active: u2.active !== false, color: cleanColor(u2.color) } };
       }
 
       case 'user.remove': {

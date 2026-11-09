@@ -281,6 +281,7 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 .card {
   background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 9px 10px; box-shadow: var(--shadow);
   display: flex; flex-direction: column; gap: 5px; cursor: pointer;
+  border-left: 4px solid var(--pc, var(--line)); /* the owner's colour */
 }
 .card:hover { border-color: var(--line-strong); }
 .card.dragging { opacity: .45; }
@@ -492,7 +493,7 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 /* ---------- calendar ---------- */
 .ctitle { font: 600 16px var(--cond); }
 .clegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink-3); }
-.clegend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; background: hsl(var(--h) 45% 45%); }
+.clegend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; background: var(--pc, hsl(var(--h) 45% 45%)); }
 .clegend i.lg-late { background: var(--crit); }
 .clegend i.lg-done { background: var(--line-strong); }
 .cgrid { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
@@ -507,14 +508,15 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 .cday.today .cnum { background: var(--accent); color: var(--accent-ink); }
 .ev {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 5px; width: 100%; text-align: left; cursor: pointer;
-  border: 0; border-left: 3px solid hsl(var(--h) 45% 45%); background: hsl(var(--h) 45% 45% / .12);
+  border: 0; border-left: 3px solid var(--pc); background: color-mix(in srgb, var(--pc) 13%, transparent);
   border-radius: 4px; padding: 2px 6px; font-size: 12px; line-height: 1.35; color: var(--ink); min-width: 0;
 }
-.ev:hover { background: hsl(var(--h) 45% 45% / .22); }
+.ev:hover { background: color-mix(in srgb, var(--pc) 24%, transparent); }
 .ev .evt { font: 500 11px var(--mono); color: var(--ink-2); }
 .ev .evn { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ev .evs { flex-basis: 100%; font-size: 11.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ev.late { border-left-color: var(--crit); background: var(--crit-soft); }
+.ev .evw { color: var(--crit); font-size: 11px; } /* late is shown by this mark too, since a person's colour may also be red */
 .ev.done { opacity: .55; }
 .ev.done .evn { text-decoration: line-through; }
 .more { background: none; border: 0; padding: 0 6px; text-align: left; font-size: 11.5px; color: var(--accent); cursor: pointer; }
@@ -612,3 +614,13 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 .arc-sum b { font-variant-numeric: tabular-nums; }
 .banner.danger { background: var(--crit-soft); border-color: color-mix(in srgb, var(--crit) 35%, transparent); }
 .banner.danger b { color: var(--crit); }
+
+/* user colours (set by a super admin in Users & access) */
+.t td.owned { box-shadow: inset 4px 0 0 var(--pc); }
+.ucolors { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ucprev { margin-right: 6px; }
+.ucsw { width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--line-strong); cursor: pointer; padding: 0; position: relative; }
+.ucsw.on { box-shadow: 0 0 0 2px var(--ink); }
+.ucsw.auto { width: auto; border-radius: 14px; padding: 0 10px; font-size: 12px; background: var(--surface-2); color: var(--ink-2); }
+.ucsw.custom { display: inline-grid; place-items: center; background: conic-gradient(#c0392b, #b7950b, #2e7d32, #0277bd, #6a1b9a, #c0392b); color: #fff; font-weight: 600; overflow: hidden; }
+.ucsw.custom input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }

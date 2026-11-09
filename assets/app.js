@@ -91,9 +91,27 @@
     return ((parts[0] || '?')[0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
   }
   function hue(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
+  // A person's colour: the one a super admin picked (Users & access), otherwise worked out from their email.
+  const USER_COLORS = ['#c0392b', '#d35400', '#b7950b', '#2e7d32', '#00897b', '#0277bd', '#283593', '#6a1b9a', '#ad1457', '#5d4037', '#455a64', '#212121'];
+  function userColor(id) { const u = user(id); return (u && u.color) || `hsl(${hue(id)} 42% 40%)`; }
+  /** Dark initials on a light colour, white on a dark one. */
+  function inkOn(color) {
+    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color || '');
+    if (!m) return '#fff';
+    const [r, g, b] = m.slice(1).map((x) => parseInt(x, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.36 ? '#18222a' : '#fff';
+  }
+  /** Whose task this is, for colouring: the named person (e.g. Project manager), otherwise the first editor. */
+  function ownerOf(it) {
+    const s = sectionOf(it);
+    const f = s && s.fields.find((x) => x.type === 'person' && val(it, x));
+    return f ? val(it, f) : (it.editors || [])[0] || '';
+  }
+  const ownerColor = (it) => { const o = ownerOf(it); return o ? userColor(o) : 'var(--line-strong)'; };
   function avatar(id, lg) {
     if (!id) return '';
-    return `<span class="av${lg ? ' lg' : ''}" style="background:hsl(${hue(id)} 42% 40%)" title="${esc(userName(id))}">${esc(initials(id))}</span>`;
+    const c = userColor(id);
+    return `<span class="av${lg ? ' lg' : ''}" style="background:${c};color:${inkOn(c)}" title="${esc(userName(id))}">${esc(initials(id))}</span>`;
   }
   function avatars(ids, max) {
     const list = [...new Set(ids.filter(Boolean))];
@@ -572,8 +590,9 @@
   }
 
   function evChip(e, full) {
-    return `<button type="button" class="ev${e.done ? ' done' : ''}${e.late ? ' late' : ''}" style="--h:${hue(e.s.id)}" data-act="open" data-id="${esc(e.it.id)}" title="${esc(e.s.name + ' · ' + e.it.title)}">
-      ${e.time ? `<span class="evt">${e.time}</span>` : ''}<span class="evn">${esc(e.it.title)}</span>${full ? `<span class="evs">${esc(e.s.name)}${(e.it.editors || []).length ? ' · ' + esc(e.it.editors.map(userName).join(', ')) : ''}</span>` : ''}</button>`;
+    const o = ownerOf(e.it);
+    return `<button type="button" class="ev${e.done ? ' done' : ''}${e.late ? ' late' : ''}" style="--pc:${ownerColor(e.it)}" data-act="open" data-id="${esc(e.it.id)}" title="${esc(e.s.name + ' · ' + e.it.title + (o ? ' · ' + userName(o) : ''))}">
+      ${e.late ? '<span class="evw" title="Late">⚠</span>' : ''}${e.time ? `<span class="evt">${e.time}</span>` : ''}<span class="evn">${esc(e.it.title)}</span>${full ? `<span class="evs">${esc(e.s.name)}${(e.it.editors || []).length ? ' · ' + esc(e.it.editors.map(userName).join(', ')) : ''}</span>` : ''}</button>`;
   }
 
   function viewCalendar() {
@@ -650,7 +669,7 @@
         <select data-cal="section" aria-label="Section"><option value="all">All sections</option>${secs.map((s) => `<option value="${esc(s.id)}"${s.id === c.section ? ' selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
         <div class="seg" role="group" aria-label="View">${['month', 'week', 'agenda'].map((v) => `<button type="button" class="${c.view === v ? 'on' : ''}" data-act="cal-view" data-v="${v}">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}</div>
       </div>
-      <div class="clegend">${secs.map((s) => `<span><i style="--h:${hue(s.id)}"></i>${esc(s.name)}</span>`).join('')}<span><i class="lg-late"></i>Late</span><span><i class="lg-done"></i>Done</span></div>
+      <div class="clegend">${[...new Set(entries.map((e) => ownerOf(e.it)))].sort((a, b) => (a ? userName(a) : '~').localeCompare(b ? userName(b) : '~')).map((o) => `<span><i style="--pc:${o ? userColor(o) : 'var(--line-strong)'}"></i>${o ? esc(userName(o)) : 'No owner'}</span>`).join('')}<span><i class="lg-late"></i>Late</span><span><i class="lg-done"></i>Done</span></div>
       ${body}`;
   }
 
@@ -1552,7 +1571,7 @@
     people = people.concat(it.editors || []);
     const nComments = S.comments.filter((c) => c.itemId === it.id && c.kind !== 'log').length;
     const drag = can.editItem(ctx(), it, s);
-    return `<article class="card" tabindex="0" ${drag ? `draggable="true" data-drag="${esc(it.id)}"` : ''} data-act="open" data-id="${esc(it.id)}">
+    return `<article class="card" style="--pc:${ownerColor(it)}" tabindex="0" ${drag ? `draggable="true" data-drag="${esc(it.id)}"` : ''} data-act="open" data-id="${esc(it.id)}" title="${ownerOf(it) ? esc(userName(ownerOf(it))) : ''}">
       ${mono && val(it, mono) ? `<div class="no">${esc(val(it, mono))}</div>` : ''}
       <div class="tt">${esc(it.title)}</div>
       ${meta.length ? `<div class="cl">${meta.join(' · ')}</div>` : ''}
@@ -1668,7 +1687,7 @@
       const due = dueInfo(s, it);
       const ppl = [...new Set((it.editors || []).concat(s.fields.filter((x) => x.type === 'person').map((x) => val(it, x)).filter(Boolean)))];
       return `<tr data-act="open" data-id="${esc(it.id)}">
-        <td class="nw">${secMark(s)} ${esc(s.name)}</td>
+        <td class="nw owned" style="--pc:${ownerColor(it)}">${secMark(s)} ${esc(s.name)}</td>
         <td class="title">${esc(it.title)}${ageInfo(s, it) ? ' ' + chip(ageInfo(s, it)) : ''}</td>
         <td class="nw">${so ? `<span class="chip c-${so.color}">${esc(so.label)}</span>` : ''}</td>
         <td class="nw">${due ? chip(due) : dv ? esc(df.type === 'date' ? fmtDate(dv) : fmtDT(dv)) : '<span class="muted">—</span>'}</td>
@@ -2522,6 +2541,15 @@
           <form class="form" id="userForm" novalidate>
             <label class="fld wide"><span>Google email *</span><input type="email" name="email" value="${esc(u.id)}" autocomplete="off"${id ? ' disabled' : ' required'}></label>
             <label class="fld wide"><span>Name</span><input type="text" name="name" value="${esc(u.name)}" placeholder="Filled in from Google at first sign-in if left empty"></label>
+            <div class="fld wide"><span>Colour</span>
+              <input type="hidden" name="color" value="${esc(u.color || '')}">
+              <div class="ucolors" role="radiogroup" aria-label="Colour">
+                <span class="ucprev" id="ucPrev">${colorPreview(u.id || 'new', u.name, u.color)}</span>
+                <button type="button" class="ucsw auto${!u.color ? ' on' : ''}" data-act="user-color" data-c="" role="radio" aria-checked="${!u.color}" title="Automatic (from the email address)">Auto</button>
+                ${USER_COLORS.map((c) => `<button type="button" class="ucsw${u.color === c ? ' on' : ''}" data-act="user-color" data-c="${c}" style="background:${c}" role="radio" aria-checked="${u.color === c}" aria-label="Colour ${c}" title="${c}"></button>`).join('')}
+                <label class="ucsw custom${u.color && !USER_COLORS.includes(u.color) ? ' on' : ''}" title="Pick any colour"><input type="color" name="colorPick" value="${esc(u.color || '#0277bd')}" aria-label="Pick any colour">＋</label>
+              </div>
+              <small class="muted">Shown on this person’s avatar everywhere in the platform, for everyone.</small></div>
             <label class="fld chk wide"><input type="checkbox" name="active"${u.active !== false ? ' checked' : ''}${isSuperRow ? ' disabled' : ''}><span>Can sign in</span></label>
             ${!isSuperRow && secs.length ? `<div class="fld wide"><span>Section access</span><div class="acc-list">${secs.map((s) => `<label class="acc">${secMark(s)}<span>${esc(s.name)}</span><select name="acc_${esc(s.id)}">${Core.LEVELS.map((l) => `<option value="${l}"${lvl(s.id) === l ? ' selected' : ''}>${l === 'none' ? 'No access' : LEVEL_LABEL[l]}</option>`).join('')}</select></label>`).join('')}</div></div>` : ''}
             ${isSuperRow ? '<div class="banner wide"><span>Super admins always have full access and cannot be switched off.</span></div>' : ''}
@@ -2536,18 +2564,37 @@
     openDrawer(id ? 'input[name=name]' : 'input[name=email]');
   }
 
+  /** The avatar as it will look with this colour ('' = automatic). */
+  function colorPreview(id, name, color) {
+    const c = color || `hsl(${hue(id)} 42% 40%)`;
+    const n = (name || id || '?').replace(/\(.*?\)/g, '').trim().split(/[\s@._-]+/).filter(Boolean);
+    return `<span class="av lg" style="background:${c};color:${inkOn(color)}">${esc(((n[0] || '?')[0] + (n[1] ? n[1][0] : '')).toUpperCase())}</span>`;
+  }
+  function pickUserColor(c) {
+    const form = $('#userForm');
+    if (!form) return;
+    form.elements.color.value = c;
+    form.querySelectorAll('.ucsw').forEach((b) => {
+      const on = b.classList.contains('custom') ? !!c && !USER_COLORS.includes(c) : (b.dataset.c || '') === c;
+      b.classList.toggle('on', on);
+      if (b.hasAttribute('aria-checked')) b.setAttribute('aria-checked', on);
+    });
+    $('#ucPrev').innerHTML = colorPreview(S.drawer.id || form.elements.email.value.trim() || 'new', form.elements.name.value.trim(), c);
+  }
+
   async function saveUser(form) {
     const id = S.drawer.id;
     const email = id || form.elements.email.value.trim().toLowerCase();
     const name = form.elements.name.value.trim();
+    const color = form.elements.color.value;
     const active = form.elements.active.checked;
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast('Enter a valid Google email.', true); return; }
     const btn = $('#saveBtn');
     btn.disabled = true;
     btn.textContent = 'Saving…';
     try {
-      const res = id ? await API.call('user.update', { id, patch: { name, active: Core.isSuperId(email) ? true : active } })
-        : await API.call('user.create', { id: email, name, active });
+      const res = id ? await API.call('user.update', { id, patch: { name, color, active: Core.isSuperId(email) ? true : active } })
+        : await API.call('user.create', { id: email, name, color, active });
       const i = S.users.findIndex((u) => u.id === res.user.id);
       if (i >= 0) S.users[i] = res.user; else S.users.push(res.user);
       for (const s of liveSections()) {
@@ -2783,6 +2830,7 @@
       case 'sec-archive': archiveSection(d.id, true); break;
       case 'sec-restore': archiveSection(d.id, false); break;
       case 'user-new': openUser(null); break;
+      case 'user-color': pickUserColor(d.c || ''); break;
       case 'user-edit': openUser(d.id); break;
       case 'user-delete':
         if (!S.drawer.armed) { openUser(S.drawer.id, true); break; }
@@ -2918,6 +2966,7 @@
     const t = e.target;
     if (t.id === 'fileInput' && t.files && t.files[0]) { uploadFile(t.files[0]); return; }
     if (t.id === 'photoInput' && t.files && t.files.length) { addPhotos([...t.files]); t.value = ''; return; }
+    if (t.name === 'colorPick' && t.closest('#userForm')) { pickUserColor(t.value.toLowerCase()); return; }
     if (t.id === 'arcFile' && t.files && t.files[0]) { readArchiveFile(t.files[0]); return; }
     if (t.dataset.access) {
       const [sid, uid2] = t.dataset.access.split('|');
