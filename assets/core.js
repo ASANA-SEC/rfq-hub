@@ -8,6 +8,7 @@
  * It never touches Sheets or the page directly. It works through a small "store":
  *   all(table) · insert(table, rec) · save(table, rec) · del(table, id) · delWhere(table, fn)
  *   now() · uid() · saveFile(item, name, mime, base64, by) · readFile(fileId)
+ * (item attachments and the photos in comments both go through saveFile / readFile)
  */
 var Core = (function () {
   'use strict';
@@ -20,6 +21,9 @@ var Core = (function () {
   var COLORS = ['gray', 'blue', 'teal', 'green', 'amber', 'red', 'purple'];
   var MAX_TEXT = 5000;
   var EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  // A comment can be changed or deleted by its author for this long after posting; super admins any time.
+  var EDIT_MINUTES = 5;
+  var MAX_PHOTOS = 4;
 
   function fail(code, message) {
     var e = new Error(message);
@@ -81,6 +85,12 @@ var Core = (function () {
     editItem: function (ctx, it, s) { return ctx.me.isSuper || (live(s) && (rank(level(ctx, s.id)) >= 3 || arr(it.editors).indexOf(ctx.me.id) >= 0)); },
     deleteItem: function (ctx, it, s) { return ctx.me.isSuper || (live(s) && rank(level(ctx, s.id)) >= 3); },
     comment: function (ctx, it, s) { return ctx.me.isSuper || (live(s) && (rank(level(ctx, s.id)) >= 2 || onItem(ctx, it))); },
+    /** Edit or delete a comment: its author within EDIT_MINUTES of posting, a super admin any time. Activity logs never. */
+    changeComment: function (ctx, c, nowIso) {
+      if (!c || c.kind === 'log') return false;
+      if (ctx.me.isSuper) return true;
+      return c.author === ctx.me.id && Date.parse(nowIso) - Date.parse(c.createdAt) <= EDIT_MINUTES * 60000;
+    },
     template: function (ctx, s) { return ctx.me.isSuper || (live(s) && rank(level(ctx, s.id)) >= 4); },
     report: function (ctx, s) { return ctx.me.isSuper || (live(s) && rank(level(ctx, s.id)) >= 4); },
   };
@@ -232,6 +242,11 @@ var Core = (function () {
       if (!it) throw fail('NOT_FOUND', 'This item was deleted by someone else.');
       return it;
     }
+    function getComment(id) {
+      var c = store.all('comments').filter(function (x) { return x.id === id; })[0];
+      if (!c) throw fail('NOT_FOUND', 'This message was deleted.');
+      return c;
+    }
     function stageLog(s, it, before) {
       if (!s.stageField) return null;
       var after = (it.data || {})[s.stageField] || '';
@@ -329,10 +344,48 @@ var Core = (function () {
         var it6 = getItem(p.itemId);
         if (!can.comment(ctx, it6, getSection(it6.sectionId))) throw fail('FORBIDDEN', 'You cannot comment on this item.');
         var text = String(p.text || '').trim().slice(0, MAX_TEXT);
-        if (!text) throw fail('BAD_REQUEST', 'Write something first.');
-        var c = { id: store.uid(), sectionId: it6.sectionId, itemId: it6.id, kind: 'comment', author: me.id, text: text, createdAt: now, updatedAt: now };
+        var photos = arr(p.photos);
+        if (photos.length > MAX_PHOTOS) throw fail('BAD_REQUEST', 'Add at most ' + MAX_PHOTOS + ' photos to one message.');
+        if (photos.some(function (ph) { return !/^image\/(jpeg|png|webp|gif)$/.test(String(ph.mimeType || '')); })) {
+          throw fail('BAD_REQUEST', 'Only photos (JPG, PNG, WebP or GIF) can be added to a message.');
+        }
+        if (!text && !photos.length) throw fail('BAD_REQUEST', 'Write something or add a photo first.');
+        var c = {
+          id: store.uid(), sectionId: it6.sectionId, itemId: it6.id, kind: 'comment', author: me.id, text: text,
+          files: photos.map(function (ph) {
+            return store.saveFile(it6, String(ph.fileName || 'photo').slice(0, 200), String(ph.mimeType), String(ph.base64 || ''), me.id);
+          }),
+          createdAt: now, updatedAt: now, editedAt: '',
+        };
         store.insert('comments', c);
         return { comment: c };
+      }
+
+      case 'comment.update': {
+        var c2 = getComment(p.id);
+        if (!can.changeComment(ctx, c2, now)) throw fail('FORBIDDEN', 'A message can only be changed by its author within ' + EDIT_MINUTES + ' minutes of posting it.');
+        var text2 = String(p.text || '').trim().slice(0, MAX_TEXT);
+        if (!text2 && !arr(c2.files).length) throw fail('BAD_REQUEST', 'A message needs some text. To remove it, delete it instead.');
+        c2.text = text2;
+        c2.editedAt = now;
+        c2.updatedAt = now;
+        store.save('comments', c2);
+        return { comment: c2 };
+      }
+
+      case 'comment.remove': {
+        var c3 = getComment(p.id);
+        if (!can.changeComment(ctx, c3, now)) throw fail('FORBIDDEN', 'A message can only be deleted by its author within ' + EDIT_MINUTES + ' minutes of posting it.');
+        store.del('comments', c3.id);
+        return { id: c3.id };
+      }
+
+      case 'comment.file': {
+        var c4 = getComment(p.id);
+        var it7 = getItem(c4.itemId);
+        if (!can.seeItem(ctx, it7, getSection(it7.sectionId))) throw fail('FORBIDDEN', 'You do not have access to this photo.');
+        if (!arr(c4.files).some(function (f) { return f.id === p.fileId; })) throw fail('NOT_FOUND', 'This photo is no longer in the message.');
+        return store.readFile(p.fileId);
       }
 
       case 'section.create': {
@@ -434,7 +487,10 @@ var Core = (function () {
           return {
             id: store.uid(), sectionId: newId, itemId: idMap[String(c.itemId)], kind: c.kind === 'log' ? 'log' : 'comment',
             author: String(c.author || '').slice(0, 120), text: String(c.text || '').slice(0, MAX_TEXT),
-            createdAt: String(c.createdAt || now).slice(0, 40), updatedAt: String(c.updatedAt || now).slice(0, 40),
+            files: arr(c.files).slice(0, MAX_PHOTOS).map(function (f) {
+              return { id: String(f.id || '').replace(/[^\w-]/g, '').slice(0, 120), name: String(f.name || '').slice(0, 200), mimeType: String(f.mimeType || '').slice(0, 100), size: Number(f.size) || 0, uploadedBy: String(f.uploadedBy || '').slice(0, 120), uploadedAt: String(f.uploadedAt || '').slice(0, 40) };
+            }),
+            createdAt: String(c.createdAt || now).slice(0, 40), updatedAt: String(c.updatedAt || now).slice(0, 40), editedAt: String(c.editedAt || '').slice(0, 40),
           };
         });
         var newAccess = !p.withAccess ? [] : arr(p.access).filter(function (a) {
@@ -513,7 +569,7 @@ var Core = (function () {
   }
 
   return {
-    SUPER_ADMINS: SUPER_ADMINS, isSuperId: isSuperId, LEVELS: LEVELS, FIELD_TYPES: FIELD_TYPES, COLORS: COLORS,
+    SUPER_ADMINS: SUPER_ADMINS, isSuperId: isSuperId, LEVELS: LEVELS, FIELD_TYPES: FIELD_TYPES, COLORS: COLORS, EDIT_MINUTES: EDIT_MINUTES, MAX_PHOTOS: MAX_PHOTOS,
     rank: rank, level: level, can: can, monitorable: monitorable, fail: fail, identify: identify, handle: handle, cleanFields: cleanFields,
   };
 })();

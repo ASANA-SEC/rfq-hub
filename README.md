@@ -40,6 +40,11 @@ Google 登录的 Client ID **沿用 Project Hub 那个**（同一个网域 asana
 7. 小助填进 `config.js`（同时把 index.html 的 `config.js?v=` 加 1）推上线后，打开网址登录 → **Create the standard sections** → Users & access 加同事
 
 > 以后 Code.gs 或 core.js 有更新，两个文件都要重新贴，再 **Deploy → Manage deployments → ✏️ → New version**，网址不变。
+
+> **2026-11 更新（留言照片 / 5 分钟改删 / 24 小时登录 / 5 秒同步 / All tasks）**：重贴 Code.gs 和 Core 之后，**再跑一次 setup**（只会在 comments 分页补上 `files`、`editedAt` 两栏，不动其他资料），然后 New version 部署。**先更新后端，再推网页**（旧后端不认新的登录方式）。
+> - 登录：Google 登录后后端发一张 24 小时的通行证（签名密钥自动存在 Script Properties 的 `SESSION_SECRET`）。要强制所有人重新登录，删掉这个属性即可
+> - 同步：网页每 5 秒问一次 `sync.rev`（只读缓存，不开 Sheet），有变动才重新载入
+> - 留言照片存在 Drive 的同一个 Files 文件夹，删除留言时照片不会从 Drive 删除
 > Google Sheet 的分页保持普通范围，**不要**转成 Table。
 
 ## 本机测试

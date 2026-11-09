@@ -195,10 +195,22 @@
 
   // ------------------------------------------------------------ sign-in
 
-  function jwtExpired(t) {
+  // The 24-hour session from the server is kept in a cookie with no expiry date: every tab of this site
+  // shares it, and the browser drops it when it is closed. The session itself also ends after 24 hours.
+  const SESSION_COOKIE = 'rfqhub_session';
+  function cookiePath() { return location.pathname.replace(/[^/]*$/, '') || '/'; }
+  function getSession() {
+    const m = document.cookie.match(new RegExp('(?:^|; )' + SESSION_COOKIE + '=([^;]*)'));
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+  function setSession(v) {
+    const tail = '; path=' + cookiePath() + '; SameSite=Strict' + (location.protocol === 'https:' ? '; Secure' : '');
+    document.cookie = SESSION_COOKIE + '=' + (v ? encodeURIComponent(v) + tail : tail + '; max-age=0');
+  }
+  function sessionExpired(t) {
     try {
       const p = JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-      return !p.exp || p.exp * 1000 < Date.now() + 60000;
+      return !p.x || p.x < Date.now() + 60000;
     } catch (e) { return true; }
   }
 
@@ -208,8 +220,8 @@
         app.innerHTML = '<div class="boot">GOOGLE_CLIENT_ID is missing in config.js. See README.md, step 1.</div>';
         return;
       }
-      const t = ssGet('rfqhub_token');
-      if (t && !jwtExpired(t)) { API.token = t; await loadData(); } else showLogin();
+      const t = getSession();
+      if (t && !sessionExpired(t)) { API.token = t; await loadData(); } else showLogin();
     } else if (API.restore()) {
       await loadData();
     } else {
@@ -255,10 +267,16 @@
     loadGis().then(() => {
       google.accounts.id.initialize({
         client_id: CFG.GOOGLE_CLIENT_ID,
-        callback: (resp) => {
-          API.token = resp.credential;
-          ssSet('rfqhub_token', resp.credential);
-          loadData();
+        callback: async (resp) => {
+          try {
+            const r = await API.startSession(resp.credential);
+            API.token = r.session;
+            setSession(r.session);
+            loadData();
+          } catch (e) {
+            API.token = null;
+            showLogin(e.message || 'Sign-in failed. Try again.');
+          }
         },
         auto_select: !message,
       });
@@ -270,7 +288,8 @@
 
   function signOut(message) {
     if (API.mode === 'remote') {
-      ssSet('rfqhub_token', null);
+      setSession(null);
+      ssSet('rfqhub_token', null); // left over from before 24-hour sessions
       API.token = null;
       if (window.google && google.accounts) google.accounts.id.disableAutoSelect();
     } else {
@@ -289,11 +308,31 @@
       S.items = res.items || [];
       S.comments = res.comments || [];
       S.access = res.access || [];
+      S.rev = res.rev;
       if (!S.loaded) { S.loaded = true; renderShell(); }
       render();
+      refreshThread();
     } catch (e) {
-      if (!silent) handleError(e);
+      if (!silent || (e && AUTH_CODES.includes(e.code))) handleError(e);
     }
+  }
+
+  // Every 5 s, ask the server whether anything changed (a tiny call), and reload only if it did.
+  const SYNC_MS = 5000;
+  let syncing = false;
+  async function syncTick() {
+    if (!S.loaded || syncing || document.visibilityState !== 'visible' || S.tpl || dragId) return;
+    syncing = true;
+    try {
+      const r = await API.call('sync.rev');
+      // Do not redraw the page under someone typing in it (a filter box, say); the drawer is redrawn separately.
+      const a = document.activeElement;
+      const typingInMain = a && a.closest && a.closest('#main') && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+      if (r.rev !== S.rev && !typingInMain && !(document.querySelector('#gsearch') && !document.querySelector('#gsearch').hidden)) await loadData(true);
+      else refreshThread(); // edit/delete links run out after 5 minutes
+    } catch (e) {
+      if (e && AUTH_CODES.includes(e.code)) handleError(e);
+    } finally { syncing = false; }
   }
 
   // ------------------------------------------------------------ shell
@@ -302,6 +341,7 @@
     dashboard: '<path d="M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 3v6h8V3z"/>',
     mywork: '<path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/>',
     calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+    tasks: '<path d="M3 5h18l-7 8v6l-4 2v-8z"/>',
     performance: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
     sections: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M17.5 14v7M14 17.5h7"/>',
     team: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4-6"/>',
@@ -437,7 +477,7 @@
   function renderNav(active) {
     const late = S.items.filter((it) => { const s = sectionOf(it); if (!s || !involved(it)) return false; const d = dueInfo(s, it); return d && d.sev === 2; }).length;
     const link = (href, key, label, icon, count) => `<a href="${href}" data-nav="${key}">${icon}<span class="lbl">${label}</span>${count ? `<span class="count">${count}</span>` : ''}</a>`;
-    let html = link('#dashboard', 'dashboard', 'Dashboard', svg('dashboard')) + link('#mywork', 'mywork', 'My Work', svg('mywork'), late) + link('#calendar', 'calendar', 'Calendar', svg('calendar'))
+    let html = link('#dashboard', 'dashboard', 'Dashboard', svg('dashboard')) + link('#mywork', 'mywork', 'My Work', svg('mywork'), late) + link('#tasks', 'tasks', 'All tasks', svg('tasks')) + link('#calendar', 'calendar', 'Calendar', svg('calendar'))
       + (canPerf() ? link('#performance', 'performance', 'Team performance', svg('performance')) : '');
     const secs = liveSections();
     if (secs.length) html += '<div class="nav-h">Sections</div>' + secs.map((s) => link('#s/' + s.id, 's/' + s.id, esc(s.name), secMark(s))).join('');
@@ -468,6 +508,7 @@
     if (r.view === 's' && r.sub === 'customize') { html = viewCustomize(r.id); nav = 's/' + r.id; title = 'Customize'; }
     else if (r.view === 's') { html = viewSection(r.id); nav = 's/' + r.id; title = (section(r.id) || {}).name || 'Section'; }
     else if (r.view === 'mywork' || r.view === 'item') { html = viewMyWork(); nav = 'mywork'; title = 'My Work'; }
+    else if (r.view === 'tasks') { html = viewAllTasks(); title = 'All tasks'; }
     else if (r.view === 'calendar') { html = viewCalendar(); title = 'Calendar'; }
     else if (r.view === 'performance') { html = viewPerformance(); title = 'Team performance'; }
     else if (r.view === 'sections') { html = viewSections(); title = 'Manage sections'; }
@@ -1560,6 +1601,121 @@
         : '<div class="empty-state"><b>Nothing open</b>Items you are assigned to in any section show up here.</div>'}`;
   }
 
+  // ------------------------------------------------------------ all tasks: one filter across every section
+
+  const ALL_DEFAULT = { q: '', section: 'all', status: 'open', due: 'any', person: 'any', sort: 'due' };
+  try { S.f.all = Object.assign({}, ALL_DEFAULT, JSON.parse(localStorage.getItem('rfqhub_allf') || '{}')); } catch (e) { S.f.all = Object.assign({}, ALL_DEFAULT); }
+  function saveAllF() { try { localStorage.setItem('rfqhub_allf', JSON.stringify(S.f.all)); } catch (e) { /* blocked */ } }
+
+  function allTasks() {
+    const f = S.f.all;
+    const terms = f.q.toLowerCase().split(/\s+/).filter(Boolean);
+    const dueN = (it) => { const s = sectionOf(it); const df = !dueMet(s, it) && dueF(s); const v = df && val(it, df); return v ? daysFromToday(v.slice(0, 10)) : null; };
+    const thisMonth = today().slice(0, 7);
+    const list = S.items.filter((it) => {
+      const s = sectionOf(it);
+      if (!s || s.archived) return false;
+      if (f.section !== 'all' && it.sectionId !== f.section) return false;
+      const done = isDone(s, it);
+      const ddf = !done && !dueMet(s, it) && dueF(s);
+      const dv = ddf && val(it, ddf);
+      const late = !!dv && (ddf.type === 'datetime' ? hoursUntil(dv) < 0 : daysFromToday(dv) < 0); // past the deadline, not just close to it
+      const waiting = !!ageInfo(s, it);
+      if (f.status === 'open' && done) return false;
+      if (f.status === 'done' && !done) return false;
+      if (f.status === 'late' && !late) return false;
+      if (f.status === 'waiting' && !waiting) return false;
+      if (f.status === 'attention' && !late && !waiting) return false;
+      if (f.due !== 'any') {
+        const n = dueN(it);
+        const df = dueF(s);
+        const v = df && val(it, df);
+        if (f.due === 'none' && n !== null) return false;
+        if (f.due === 'overdue' && !(n !== null && n < 0)) return false;
+        if (f.due === 'today' && n !== 0) return false;
+        if (f.due === 'week' && !(n !== null && n >= 0 && n <= 7)) return false;
+        if (f.due === 'month' && !(v && v.slice(0, 7) === thisMonth)) return false;
+      }
+      if (f.person !== 'any' && !userOn(it, f.person === 'me' ? S.me.id : f.person)) return false;
+      if (terms.length) {
+        const text = searchFields(it).map((p) => p.text).join(' \n ').toLowerCase() + ' ' + s.name.toLowerCase();
+        if (!terms.every((t) => text.includes(t))) return false;
+      }
+      return true;
+    });
+    const by = {
+      due: byDue,
+      updated: (a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''),
+      created: (a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''),
+      title: (a, b) => a.title.localeCompare(b.title),
+      section: (a, b) => (Number(sectionOf(a).order) - Number(sectionOf(b).order)) || byDue(a, b),
+    };
+    return list.sort(by[f.sort] || byDue);
+  }
+
+  function viewAllTasks() {
+    const f = S.f.all;
+    const list = allTasks();
+    const shown = list.slice(0, 300);
+    const sel = (key, opts, label) => `<select data-af="${key}" aria-label="${label}">${opts.map(([v, l]) => `<option value="${esc(v)}"${f[key] === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+    const people = S.users.filter((u) => u.active || u.id === f.person).sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+    const filtered = JSON.stringify(f) !== JSON.stringify(Object.assign({}, ALL_DEFAULT, { sort: f.sort }));
+    const row = (it) => {
+      const s = sectionOf(it);
+      const so = stageOpt(s, it);
+      const df = dueF(s);
+      const dv = df && val(it, df);
+      const due = dueInfo(s, it);
+      const ppl = [...new Set((it.editors || []).concat(s.fields.filter((x) => x.type === 'person').map((x) => val(it, x)).filter(Boolean)))];
+      return `<tr data-act="open" data-id="${esc(it.id)}">
+        <td class="nw">${secMark(s)} ${esc(s.name)}</td>
+        <td class="title">${esc(it.title)}${ageInfo(s, it) ? ' ' + chip(ageInfo(s, it)) : ''}</td>
+        <td class="nw">${so ? `<span class="chip c-${so.color}">${esc(so.label)}</span>` : ''}</td>
+        <td class="nw">${due ? chip(due) : dv ? esc(df.type === 'date' ? fmtDate(dv) : fmtDT(dv)) : '<span class="muted">—</span>'}</td>
+        <td class="nw">${avatars(ppl, 4)}</td>
+        <td class="nw muted">${ago(it.updatedAt)}</td></tr>`;
+    };
+    return `
+      <div class="head"><div><h1>All tasks</h1><div class="sub">Search and filter every task you can see, across all sections · <b>${list.length}</b> match${list.length === 1 ? '' : 'es'}</div></div>
+        <div class="toolbar"><details class="menu"><summary class="btn">Export</summary><div class="menu-b">
+          <button type="button" data-act="all-export" data-fmt="xlsx"><b>Excel (.xlsx)</b><small>The tasks matching these filters</small></button>
+          <button type="button" data-act="all-export" data-fmt="pdf"><b>PDF</b><small>A4 landscape list</small></button></div></details></div></div>
+      <div class="toolbar af-bar">
+        <input type="search" class="grow" data-af-input="q" value="${esc(f.q)}" placeholder="Search titles, numbers, clients, people, comments…" aria-label="Search all tasks">
+        ${sel('section', [['all', 'All sections']].concat(liveSections().map((s) => [s.id, s.name])), 'Section')}
+        ${sel('status', [['open', 'Open'], ['attention', 'Needs attention'], ['late', 'Late'], ['waiting', 'Waiting too long'], ['done', 'Done'], ['all', 'Open and done']], 'Status')}
+        ${sel('due', [['any', 'Any deadline'], ['overdue', 'Overdue'], ['today', 'Due today'], ['week', 'Due in 7 days'], ['month', 'Due this month'], ['none', 'No deadline']], 'Deadline')}
+        ${sel('person', [['any', 'Anyone'], ['me', 'Me']].concat(people.filter((u) => u.id !== S.me.id).map((u) => [u.id, u.name || u.id])), 'Person')}
+        ${sel('sort', [['due', 'Sort: deadline'], ['updated', 'Sort: last updated'], ['created', 'Sort: newest'], ['section', 'Sort: section'], ['title', 'Sort: title']], 'Sort')}
+        ${filtered ? '<button type="button" class="btn" data-act="all-clear">Clear filters</button>' : ''}
+      </div>
+      <div id="allBody">${list.length ? `<div class="tablewrap"><table class="t"><thead><tr><th>Section</th><th>Task</th><th>Stage</th><th>Deadline</th><th>People</th><th>Updated</th></tr></thead>
+        <tbody>${shown.map(row).join('')}</tbody></table></div>${list.length > shown.length ? `<p class="muted" style="margin-top:8px">Showing the first ${shown.length} of ${list.length}. Narrow the filters, or export to see them all.</p>` : ''}`
+        : '<div class="empty-state"><b>No tasks match</b>Try another word, or clear the filters.</div>'}</div>`;
+  }
+
+  function allReport() {
+    const list = allTasks();
+    const f = S.f.all;
+    const label = (key, v) => ({ status: { open: 'Open', attention: 'Needs attention', late: 'Late', waiting: 'Waiting too long', done: 'Done', all: 'Open and done' }, due: { any: 'Any deadline', overdue: 'Overdue', today: 'Due today', week: 'Due in 7 days', month: 'Due this month', none: 'No deadline' } }[key] || {})[v] || v;
+    return {
+      title: 'All tasks',
+      meta: ['Search: ' + (f.q || '—'), 'Section: ' + (f.section === 'all' ? 'All sections' : (section(f.section) || {}).name), 'Status: ' + label('status', f.status), 'Deadline: ' + label('due', f.due),
+        'Person: ' + (f.person === 'any' ? 'Anyone' : f.person === 'me' ? userName(S.me.id) : userName(f.person))],
+      file: 'All_tasks_' + today(),
+      tables: [{
+        name: 'Tasks', heading: list.length + ' tasks',
+        cols: [{ label: 'Section', kind: 'text' }, { label: 'Task', kind: 'text' }, { label: 'Stage', kind: 'text' }, { label: 'Deadline', kind: 'date' }, { label: 'Alert', kind: 'text' }, { label: 'Editors', kind: 'text' }, { label: 'Updated', kind: 'date' }],
+        rows: list.map((it) => {
+          const s = sectionOf(it);
+          const df = dueF(s);
+          const d = dueInfo(s, it) || ageInfo(s, it);
+          return [s.name, it.title, (stageOpt(s, it) || {}).label || '', df ? (val(it, df) || '').slice(0, 10) : '', d && d.sev ? d.text : '', (it.editors || []).map(userName).join(', '), (it.updatedAt || '').slice(0, 10)];
+        }),
+      }],
+    };
+  }
+
   // ------------------------------------------------------------ super admin: sections
 
   function viewSections() {
@@ -1979,9 +2135,9 @@
     const editable = isNew ? can.create(ctx(), s) : can.editItem(ctx(), it, s);
     const ro = !editable;
     const commentable = !isNew && can.comment(ctx(), it, s);
-    const thread = isNew ? [] : S.comments.filter((c) => c.itemId === it.id).sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
     const related = isNew ? [] : liveSections().flatMap((s2) => s2.fields.filter((f) => f.type === 'link' && f.target === s.id).map((f) => ({ s2, f, items: S.items.filter((x) => x.sectionId === s2.id && val(x, f) === it.id) })));
     const fields = s.fields;
+    const draft = $('#commentText') ? $('#commentText').value : '';
     drawerEl.innerHTML = `
       <div class="scrim" data-act="close-drawer"></div>
       <div class="pane" role="dialog" aria-modal="true" aria-labelledby="paneTitle">
@@ -1996,7 +2152,7 @@
         <div class="pane-b">
           <div class="pb-main">
           <form class="form" id="itemForm" novalidate>
-            ${fields.map((f) => `<label class="fld${f.type === 'longtext' || f.key === 'title' ? ' wide' : ''}${f.type === 'checkbox' ? ' chk' : ''}">${f.type === 'checkbox' ? inputFor(s, f, val(it, f), ro) + `<span>${esc(f.label)}</span>` : `<span>${esc(f.label)}${f.required ? ' *' : ''}</span>${inputFor(s, f, val(it, f), ro)}`}</label>`).join('')}
+            ${fields.map((f) => `<label class="fld${f.type === 'longtext' || f.key === 'title' ? ' wide' : ''}${f.type === 'checkbox' ? ' chk' : ''}">${f.type === 'checkbox' ? inputFor(s, f, val(it, f), ro) + `<span>${esc(f.label)}</span>` : `<span>${esc(f.label)}${f.required ? ' *' : ''}</span>${inputFor(s, f, val(it, f), ro)}${f.type === 'text' || f.type === 'longtext' ? fieldLinks(val(it, f)) : ''}`}</label>`).join('')}
             ${picker('editors', 'Editors', it.editors || [], ro, 'Editors can change this item, even without access to the whole section.')}
             ${picker('collaborators', 'Collaborators', it.collaborators || [], ro, 'Collaborators can see this item and comment on it.')}
             <div class="form-actions">
@@ -2018,17 +2174,181 @@
                 : `<div class="muted">No files yet.${API.mode === 'demo' ? ' Attachments are stored in Google Drive once it is connected.' : ''}</div>`}
             </section>
             <section class="sec"><h3>Comments &amp; activity</h3>
-              <div class="thread">${thread.length ? thread.map((c) => c.kind === 'log'
-                ? `<div class="msg log"><span class="dot"></span><div>${esc(userName(c.author))} ${esc(c.text)} · ${ago(c.createdAt)}</div></div>`
-                : `<div class="msg">${avatar(c.author)}<div class="bd"><div class="hd"><b>${esc(userName(c.author))}</b> · ${ago(c.createdAt)}</div><div class="tx">${esc(c.text)}</div></div></div>`).join('')
-                : '<div class="muted">No comments yet.</div>'}</div>
-              ${commentable ? '<div class="composer"><textarea id="commentText" placeholder="Write an update or ask a question…" aria-label="Comment"></textarea><button type="button" class="btn sm" data-act="add-comment">Post comment</button></div>' : ''}
+              <div class="thread" id="thread">${threadHtml(it)}</div>
+              ${commentable ? `<div class="composer">
+                <textarea id="commentText" placeholder="Write an update or ask a question… (paste a screenshot to add it)" aria-label="Comment"></textarea>
+                <div class="pend" id="pendPhotos">${pendingHtml()}</div>
+                <div class="comp-row"><button type="button" class="btn sm" data-act="photo-pick" title="Add up to ${Core.MAX_PHOTOS} photos">📷 Photo</button><input type="file" id="photoInput" accept="image/*" multiple hidden>
+                  <span class="sp"></span><button type="button" class="btn sm primary" data-act="add-comment" id="postBtn">Post comment</button></div>
+              </div>` : ''}
             </section>` : ''}
           </div>
         </div>
       </div>`;
     drawerEl.classList.toggle('full', !!S.drawer.full);
     openDrawer(isNew ? '#itemForm input:not([disabled])' : '.x');
+    if (draft && $('#commentText')) $('#commentText').value = draft;
+    S.drawer.threadHtml = $('#thread') ? $('#thread').innerHTML : '';
+    hydratePhotos();
+  }
+
+  // ------------------------------------------------------------ comments: links, photos, edit / delete
+
+  /** Escape text and turn every https:// address into a link that opens in a new tab. */
+  function linkify(text) {
+    return esc(text).replace(/https:\/\/[^\s<>"']+/g, (u) => {
+      const tail = (u.match(/[.,;:!?)\]]+$/) || [''])[0]; // "see https://x.com/a." — the full stop is not part of it
+      const href = tail ? u.slice(0, -tail.length) : u;
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer">${href}</a>${tail}`;
+    });
+  }
+  /** The https:// links inside a text field, listed under it so they can be clicked. */
+  function fieldLinks(v) {
+    const urls = String(v || '').match(/https:\/\/[^\s<>"']+/g);
+    if (!urls) return '';
+    return `<span class="fld-links">${[...new Set(urls.map((u) => u.replace(/[.,;:!?)\]]+$/, '')))].map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">↗ ${esc(u.replace(/^https:\/\//, '').slice(0, 60))}</a>`).join('')}</span>`;
+  }
+
+  const canChange = (c) => can.changeComment(ctx(), c, new Date().toISOString());
+  function minutesLeft(c) { return Math.max(0, Math.ceil((Date.parse(c.createdAt) + Core.EDIT_MINUTES * 60000 - Date.now()) / 60000)); }
+
+  function threadHtml(it) {
+    const thread = S.comments.filter((c) => c.itemId === it.id).sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+    if (!thread.length) return '<div class="muted">No comments yet.</div>';
+    const d = S.drawer || {};
+    return thread.map((c) => {
+      if (c.kind === 'log') return `<div class="msg log"><span class="dot"></span><div>${esc(userName(c.author))} ${esc(c.text)} · ${ago(c.createdAt)}</div></div>`;
+      const mine = canChange(c);
+      const tools = mine && d.editing !== c.id ? `<span class="mtools">
+          <button type="button" class="linkbtn" data-act="comment-edit" data-id="${esc(c.id)}">Edit</button>
+          <button type="button" class="linkbtn danger${d.armedComment === c.id ? ' armed' : ''}" data-act="comment-delete" data-id="${esc(c.id)}">${d.armedComment === c.id ? 'Click again to delete' : 'Delete'}</button>
+          ${S.me.isSuper ? '' : `<small class="muted">${minutesLeft(c)} min left</small>`}</span>` : '';
+      const body = d.editing === c.id
+        ? `<div class="medit"><textarea id="editText" aria-label="Edit message">${esc(c.text)}</textarea>
+            <div class="comp-row"><span class="sp"></span><button type="button" class="btn sm" data-act="comment-cancel">Cancel</button><button type="button" class="btn sm primary" data-act="comment-save" data-id="${esc(c.id)}">Save</button></div></div>`
+        : (c.text ? `<div class="tx">${linkify(c.text)}</div>` : '');
+      const photos = (c.files || []).length ? `<div class="photos">${c.files.map((f) => `<button type="button" class="ph" data-act="photo-open" data-comment="${esc(c.id)}" data-file="${esc(f.id)}" title="${esc(f.name)}"><img alt="${esc(f.name)}" data-comment="${esc(c.id)}" data-photo="${esc(f.id)}"></button>`).join('')}</div>` : '';
+      return `<div class="msg">${avatar(c.author)}<div class="bd"><div class="hd"><b>${esc(userName(c.author))}</b> · ${ago(c.createdAt)}${c.editedAt ? ` · <span class="muted" title="Edited ${esc(fmtDT(c.editedAt))}">edited</span>` : ''}${tools}</div>${body}${photos}</div></div>`;
+    }).join('');
+  }
+
+  /** Redraw only the messages of the open item, so whatever is being typed in the form or the composer stays. */
+  function refreshThread(force) {
+    const d = S.drawer;
+    const box = $('#thread');
+    if (!d || d.kind !== 'item' || !d.id || !box || (d.editing && !force)) return;
+    const it = item(d.id);
+    if (!it) return;
+    const html = threadHtml(it);
+    if (html === d.threadHtml) return;
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.innerHTML = html;
+    d.threadHtml = html;
+    if (atBottom) box.scrollTop = box.scrollHeight;
+    hydratePhotos();
+  }
+
+  // Photos are private in Google Drive, so each one is fetched once through the server and kept for this visit.
+  const photoCache = {};
+  function hydratePhotos() {
+    document.querySelectorAll('img[data-photo]').forEach((img) => {
+      const fid = img.dataset.photo;
+      const ready = photoCache[fid];
+      if (ready && ready.url) { img.src = ready.url; img.closest('.ph').classList.remove('loading', 'failed'); return; }
+      img.closest('.ph').classList.add('loading');
+      if (ready && ready.wait) return;
+      const entry = photoCache[fid] = { wait: true };
+      API.call('comment.file', { id: img.dataset.comment, fileId: fid }).then((f) => {
+        const bytes = Uint8Array.from(atob(f.base64), (ch) => ch.charCodeAt(0));
+        entry.url = URL.createObjectURL(new Blob([bytes], { type: f.mimeType || 'image/jpeg' }));
+        entry.name = f.name;
+        entry.wait = false;
+        document.querySelectorAll(`img[data-photo="${CSS.escape(fid)}"]`).forEach((x) => { x.src = entry.url; x.closest('.ph').classList.remove('loading'); });
+      }).catch(() => {
+        delete photoCache[fid];
+        document.querySelectorAll(`img[data-photo="${CSS.escape(fid)}"]`).forEach((x) => { const b = x.closest('.ph'); b.classList.remove('loading'); b.classList.add('failed'); });
+      });
+    });
+  }
+
+  function openPhoto(fid) {
+    const p = photoCache[fid];
+    if (!p || !p.url) { hydratePhotos(); return; }
+    let lb = $('#lightbox');
+    if (!lb) { lb = document.createElement('div'); lb.id = 'lightbox'; lb.className = 'lightbox'; document.body.appendChild(lb); }
+    lb.innerHTML = `<div class="scrim" data-act="photo-close"></div><figure><img src="${p.url}" alt="${esc(p.name || 'Photo')}">
+      <figcaption><span>${esc(p.name || '')}</span><a class="btn sm" href="${p.url}" download="${esc(p.name || 'photo.jpg')}">Download</a><button type="button" class="btn sm" data-act="photo-close">Close</button></figcaption></figure>`;
+    lb.hidden = false;
+  }
+  function closePhoto() { const lb = $('#lightbox'); if (lb) { lb.hidden = true; lb.innerHTML = ''; } }
+
+  // Photos waiting to be posted: shrunk in the browser first (longest side 1600 px), so uploads stay small and quick.
+  function pendingHtml() {
+    const list = (S.drawer && S.drawer.pending) || [];
+    return list.map((p, i) => `<span class="pthumb"><img src="${p.url}" alt="${esc(p.fileName)}"><button type="button" class="x" data-act="photo-unpick" data-i="${i}" aria-label="Remove photo">×</button></span>`).join('');
+  }
+  function shrinkPhoto(file) {
+    return new Promise((resolve, reject) => {
+      const src = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.naturalWidth * k);
+        c.height = Math.round(img.naturalHeight * k);
+        const g = c.getContext('2d');
+        g.fillStyle = '#fff'; // transparent PNGs get a white background in the JPEG
+        g.fillRect(0, 0, c.width, c.height);
+        g.drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(src);
+        c.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not read this photo.'))), 'image/jpeg', 0.85);
+      };
+      img.onerror = () => { URL.revokeObjectURL(src); reject(new Error(file.name + ' is not a photo this browser can open.')); };
+      img.src = src;
+    });
+  }
+  async function addPhotos(files) {
+    const d = S.drawer;
+    if (!d || !d.id) return;
+    d.pending = d.pending || [];
+    for (const file of files) {
+      if (!/^image\//.test(file.type)) { toast(file.name + ' is not a photo.', true); continue; }
+      if (d.pending.length >= Core.MAX_PHOTOS) { toast('Add at most ' + Core.MAX_PHOTOS + ' photos to one message.', true); break; }
+      if (file.size > 25 * 1024 * 1024) { toast(file.name + ' is over 25 MB.', true); continue; }
+      try {
+        const blob = await shrinkPhoto(file);
+        const base64 = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.readAsDataURL(blob); });
+        d.pending.push({ fileName: (file.name || 'photo').replace(/\.[^.]+$/, '') + '.jpg', mimeType: 'image/jpeg', base64, url: URL.createObjectURL(blob) });
+      } catch (e) { toast(e.message, true); }
+    }
+    const box = $('#pendPhotos');
+    if (box && S.drawer === d) box.innerHTML = pendingHtml();
+  }
+
+  async function saveCommentEdit(id) {
+    const ta = $('#editText');
+    if (!ta) return;
+    ta.disabled = true;
+    try {
+      const res = await API.call('comment.update', { id, text: ta.value });
+      const i = S.comments.findIndex((c) => c.id === id);
+      if (i >= 0) S.comments[i] = res.comment;
+      S.drawer.editing = null;
+      refreshThread();
+      toast('Message updated');
+    } catch (e) { ta.disabled = false; handleError(e); }
+  }
+  async function deleteComment(id) {
+    const d = S.drawer;
+    if (d.armedComment !== id) { d.armedComment = id; d.threadHtml = ''; refreshThread(); return; }
+    try {
+      await API.call('comment.remove', { id });
+      S.comments = S.comments.filter((c) => c.id !== id);
+      d.armedComment = null;
+      refreshThread();
+      render();
+      toast('Message deleted');
+    } catch (e) { d.armedComment = null; handleError(e); refreshThread(); }
   }
 
   /** Switch the open item between side panel and full screen; only styling changes, so typed input stays. */
@@ -2112,16 +2432,30 @@
   }
 
   async function addComment() {
+    const d = S.drawer;
     const ta = $('#commentText');
-    const text = ta && ta.value.trim();
-    if (!text) return;
+    const btn = $('#postBtn');
+    const text = ta ? ta.value.trim() : '';
+    const pending = d.pending || [];
+    if (!text && !pending.length) return;
     ta.disabled = true;
+    if (btn) { btn.disabled = true; btn.textContent = pending.length ? 'Uploading…' : 'Posting…'; }
     try {
-      const res = await API.call('comment.create', { itemId: S.drawer.id, text });
+      const res = await API.call('comment.create', { itemId: d.id, text, photos: pending.map((p) => ({ fileName: p.fileName, mimeType: p.mimeType, base64: p.base64 })) });
+      // The photos just sent are already in this browser: show them without fetching them back
+      (res.comment.files || []).forEach((f, i) => { if (pending[i]) photoCache[f.id] = { url: pending[i].url, name: f.name }; });
       S.comments.push(res.comment);
-      renderItemDrawer(item(S.drawer.id));
+      d.pending = [];
+      ta.value = '';
+      const box = $('#pendPhotos');
+      if (box) box.innerHTML = '';
+      refreshThread();
+      const th = $('#thread');
+      if (th) th.lastElementChild && th.lastElementChild.scrollIntoView({ block: 'nearest' });
       render();
-    } catch (e) { ta.disabled = false; handleError(e); }
+    } catch (e) { handleError(e); }
+    if (ta.isConnected) { ta.disabled = false; ta.focus(); }
+    if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = 'Post comment'; }
   }
 
   async function uploadFile(file) {
@@ -2343,6 +2677,24 @@
       case 'close-drawer': closeDrawer(); break;
       case 'item-delete': deleteItem(); break;
       case 'add-comment': addComment(); break;
+      case 'photo-pick': { const pi = $('#photoInput'); if (pi) pi.click(); break; }
+      case 'photo-unpick': {
+        const p = S.drawer.pending.splice(Number(d.i), 1)[0];
+        if (p) URL.revokeObjectURL(p.url);
+        $('#pendPhotos').innerHTML = pendingHtml();
+        break;
+      }
+      case 'photo-open': openPhoto(d.file); break;
+      case 'photo-close': closePhoto(); break;
+      case 'comment-edit':
+        S.drawer.editing = d.id;
+        S.drawer.armedComment = null;
+        refreshThread(true);
+        if ($('#editText')) { const ta = $('#editText'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+        break;
+      case 'comment-cancel': S.drawer.editing = null; refreshThread(true); break;
+      case 'comment-save': saveCommentEdit(d.id); break;
+      case 'comment-delete': deleteComment(d.id); break;
       case 'upload': { const fi = $('#fileInput'); if (fi) fi.click(); break; }
       case 'file-open': openFile(d.file); break;
       case 'view': S.f.view[d.section] = d.v; saveViews(); render(); break;
@@ -2358,6 +2710,10 @@
         exportTables(d.fmt, perfReport(), el.querySelector('b')).then(() => { const m = el.closest('details'); if (m) m.open = false; });
         break;
       }
+      case 'all-clear': S.f.all = Object.assign({}, ALL_DEFAULT, { sort: S.f.all.sort }); saveAllF(); render(); break;
+      case 'all-export':
+        exportTables(d.fmt, allReport(), el.querySelector('b')).then(() => { const m = el.closest('details'); if (m) m.open = false; });
+        break;
       case 'search-open': openSearch(); break;
       case 'search-close': closeSearch(); break;
       case 'gs-go': goSearch(Number(d.i)); break;
@@ -2501,8 +2857,19 @@
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
     // Ctrl/Cmd + K (either case, so Caps Lock does not break it) or "/" opens search
     if (S.loaded && ((String(e.key).toLowerCase() === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !typing))) { e.preventDefault(); openSearch(); return; }
+    if (e.key === 'Escape' && $('#lightbox') && !$('#lightbox').hidden) { closePhoto(); return; }
+    if (e.key === 'Escape' && S.drawer && S.drawer.editing) { S.drawer.editing = null; refreshThread(true); return; }
     if (e.key === 'Escape' && S.drawer) closeDrawer();
     if (e.key === 'Enter' && e.target.matches('.card[data-act="open"]')) openItem(e.target.dataset.id);
+  });
+
+  // A screenshot pasted into the message box becomes a photo for that message
+  document.addEventListener('paste', (e) => {
+    if (e.target.id !== 'commentText' || !e.clipboardData) return;
+    const files = [...e.clipboardData.files].filter((f) => /^image\//.test(f.type));
+    if (!files.length) return;
+    e.preventDefault();
+    addPhotos(files);
   });
 
   document.addEventListener('submit', (e) => {
@@ -2550,6 +2917,7 @@
   document.addEventListener('change', (e) => {
     const t = e.target;
     if (t.id === 'fileInput' && t.files && t.files[0]) { uploadFile(t.files[0]); return; }
+    if (t.id === 'photoInput' && t.files && t.files.length) { addPhotos([...t.files]); t.value = ''; return; }
     if (t.id === 'arcFile' && t.files && t.files[0]) { readArchiveFile(t.files[0]); return; }
     if (t.dataset.access) {
       const [sid, uid2] = t.dataset.access.split('|');
@@ -2559,6 +2927,12 @@
     }
     if (t.dataset.perf) {
       S.f.perf[t.dataset.perf] = t.value;
+      render();
+      return;
+    }
+    if (t.dataset.af) {
+      S.f.all[t.dataset.af] = t.value;
+      saveAllF();
       render();
       return;
     }
@@ -2609,6 +2983,18 @@
       return;
     }
     if (t.id === 'gsInput') { renderSearch(); return; }
+    if (t.dataset.afInput) {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        S.f.all.q = t.value;
+        saveAllF();
+        const pos = t.selectionStart;
+        render();
+        const box = document.querySelector('[data-af-input="q"]');
+        if (box) { box.focus(); box.setSelectionRange(pos, pos); }
+      }, 200);
+      return;
+    }
     if (t.dataset.fr !== undefined && t.dataset.p === 'value' && t.tagName === 'INPUT' && t.type !== 'date') {
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => {
@@ -2673,10 +3059,9 @@
     render();
   });
 
-  // Pick up teammates' changes every 90 s while the tab is visible and nothing is being edited
-  setInterval(() => {
-    if (API.mode === 'remote' && S.loaded && !S.drawer && !S.tpl && !dragId && document.visibilityState === 'visible') loadData(true);
-  }, 90000);
+  // Pick up teammates' changes every 5 s while the tab is visible, and at once when it comes back into view
+  setInterval(syncTick, SYNC_MS);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncTick(); });
 
   boot();
 })();

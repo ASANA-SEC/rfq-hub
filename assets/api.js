@@ -6,7 +6,9 @@
   const CFG = window.APP_CONFIG || {};
   const DEMO_KEY = 'rfqhub_demo_v1';
   const DEMO_USER = 'rfqhub_demo_user';
+  const DEMO_REV = 'rfqhub_demo_rev';
   const clone = (o) => JSON.parse(JSON.stringify(o));
+  function demoRev() { try { return localStorage.getItem(DEMO_REV) || '0'; } catch (e) { return '0'; } }
 
   function ssGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
   function ssSet(k, v) { try { if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) { /* blocked */ } }
@@ -48,6 +50,11 @@
 
     async upload(id, file) {
       return this.call('item.upload', { id, fileName: file.name, mimeType: file.type, base64: await readBase64(file) });
+    },
+    /** Trade the 1-hour Google sign-in for the app's own 24-hour session. */
+    async startSession(googleToken) {
+      this.token = googleToken;
+      return this.call('auth.session');
     },
   };
 
@@ -191,6 +198,9 @@
     }
     function persist() { try { localStorage.setItem(DEMO_KEY, JSON.stringify(db)); } catch (e) { /* blocked */ } }
     const noDrive = () => Core.fail('DEMO', 'Attachments are saved to Google Drive. They start working after the Google setup in README.md.');
+    // Demo photos in messages live in this browser only (sessionStorage), so they can be tried out.
+    const PHOTO_KEY = 'rfqhub_demo_photos';
+    function photos() { try { return JSON.parse(sessionStorage.getItem(PHOTO_KEY) || '{}'); } catch (e) { return {}; } }
     return {
       all: (t) => clone(load()[t]),
       insert: (t, rec) => { load()[t].push(clone(rec)); persist(); },
@@ -206,9 +216,22 @@
       delWhere: (t, fn) => { db[t] = load()[t].filter((r) => !fn(r)); persist(); },
       now: () => new Date().toISOString(),
       uid: () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-      saveFile: () => { throw noDrive(); },
-      readFile: () => { throw noDrive(); },
+      saveFile: (it, name, mime, base64, by) => {
+        if (!base64 || !/^image\//.test(mime)) throw noDrive();
+        const id = 'demo' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        const all = photos();
+        all[id] = { name, mimeType: mime, base64 };
+        try { sessionStorage.setItem(PHOTO_KEY, JSON.stringify(all)); } catch (e) { throw Core.fail('DEMO', 'This browser has no room left for demo photos.'); }
+        return { id, name, mimeType: mime, size: Math.round(base64.length * 0.75), uploadedBy: by, uploadedAt: new Date().toISOString() };
+      },
+      readFile: (fileId) => {
+        const f = photos()[fileId];
+        if (!f) throw Core.fail('DEMO', 'Demo photos are kept only until this browser tab is closed.');
+        return f;
+      },
       reset: () => { try { localStorage.removeItem(DEMO_KEY); } catch (e) { /* blocked */ } db = null; },
+      reload: () => { db = null; }, // another demo tab may have changed the data
+
     };
   }
 
@@ -235,9 +258,16 @@
     },
     async call(action, payload) {
       if (!this.me) throw Core.fail('AUTH_REQUIRED', 'Please sign in.');
+      // Same change counter as the server, shared by every demo tab in this browser
+      if (action === 'sync.rev') return { rev: demoRev() };
+      const rev = demoRev();
+      store.reload();
       // Re-check the account each call, like the server does
       this.me = Core.identify(store, this.me.id, '');
-      return clone(Core.handle(store, this.me, action, payload || {}));
+      const out = clone(Core.handle(store, this.me, action, payload || {}));
+      if (action === 'bootstrap') out.rev = rev;
+      else if (!/\.file$/.test(action)) { try { localStorage.setItem(DEMO_REV, Date.now().toString(36)); } catch (e) { /* blocked */ } }
+      return out;
     },
     async upload(id, file) {
       return this.call('item.upload', { id, fileName: file.name, mimeType: file.type, base64: '' });

@@ -30,13 +30,16 @@ const TABLES = {
   sections: ['id', 'name', 'template', 'order', 'fields', 'stageField', 'archived', 'createdBy', 'createdAt', 'updatedAt'],
   access: ['id', 'sectionId', 'userId', 'level', 'createdBy', 'createdAt', 'updatedAt'],
   items: ['id', 'sectionId', 'title', 'data', 'editors', 'collaborators', 'files', 'stageChangedAt', 'createdBy', 'createdAt', 'updatedAt'],
-  comments: ['id', 'sectionId', 'itemId', 'kind', 'author', 'text', 'createdAt', 'updatedAt'],
+  comments: ['id', 'sectionId', 'itemId', 'kind', 'author', 'text', 'createdAt', 'updatedAt', 'files', 'editedAt'],
   calendar: ['id', 'eventId', 'updatedAt'], // id = item id
 };
 const JSON_COLS = ['fields', 'data', 'editors', 'collaborators', 'files'];
 const BOOL_COLS = ['active', 'archived'];
 const NUM_COLS = ['order'];
-const READ_ONLY_ACTIONS = ['bootstrap', 'item.file'];
+const READ_ONLY_ACTIONS = ['bootstrap', 'item.file', 'comment.file'];
+
+// After Google sign-in the app gets its own signed pass, valid this long, so people sign in once a day.
+const SESSION_HOURS = 24;
 
 // ---------------------------------------------------------------- setup
 
@@ -106,7 +109,17 @@ function doGet() {
 function doPost(e) {
   try {
     const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    const ident = verifyGoogle_(req.token);
+    // Asked every few seconds by every open page: answer from the cache, without opening the Sheet.
+    if (req.action === 'sync.rev') {
+      verifySession_(req.token);
+      return json_({ ok: true, data: { rev: rev_() } });
+    }
+    if (req.action === 'auth.session') {
+      const g = verifyGoogle_(req.token);
+      const me0 = Core.identify(sheetStore_(), g.email, g.name);
+      return json_({ ok: true, data: makeSession_(me0) });
+    }
+    const ident = verifyAuth_(req.token);
     const run = function () {
       const store = sheetStore_();
       const me = Core.identify(store, ident.email, ident.name);
@@ -114,7 +127,9 @@ function doPost(e) {
         if (!me.isSuper) throw Core.fail('FORBIDDEN', 'Only a super admin can do this.');
         return resyncCalendar_(store, null, 4 * 60 * 1000);
       }
+      const revBefore = rev_(); // read first, so a change made while loading is never missed
       const result = Core.handle(store, me, req.action, req.payload || {});
+      if (req.action === 'bootstrap') result.rev = revBefore;
       try {
         afterChange_(store, req.action, result);
       } catch (calErr) {
@@ -123,7 +138,8 @@ function doPost(e) {
       }
       return result;
     };
-    const data = READ_ONLY_ACTIONS.indexOf(req.action) >= 0 ? run() : withLock_(run);
+    const readOnly = READ_ONLY_ACTIONS.indexOf(req.action) >= 0;
+    const data = readOnly ? run() : withLock_(function () { const r = run(); bumpRev_(); return r; });
     return json_({ ok: true, data: data });
   } catch (err) {
     return json_({ ok: false, code: err.code || 'ERROR', error: String(err.message || err) });
@@ -270,6 +286,73 @@ function verifyGoogle_(token) {
   const ident = { email: String(info.email).toLowerCase(), name: info.name || '' };
   cache.put(key, JSON.stringify(ident), Math.max(30, Math.min(600, Number(info.exp) - now - 30)));
   return ident;
+}
+
+// ---------------------------------------------------------------- 24-hour sessions
+// A session is "ph1.<payload>.<signature>": payload = { e: email, n: name, x: expiry ms }, signed with
+// HMAC-SHA256 and a random secret kept in Script Properties. Nobody can make one without the secret.
+// Every call still checks the account (Core.identify), so switching a user off takes effect at once.
+
+function sessionSecret_() {
+  const cache = CacheService.getScriptCache();
+  let s = cache.get('SESSION_SECRET');
+  if (s) return s;
+  const props = PropertiesService.getScriptProperties();
+  s = props.getProperty('SESSION_SECRET');
+  if (!s) {
+    s = Utilities.getUuid() + Utilities.getUuid();
+    props.setProperty('SESSION_SECRET', s);
+  }
+  cache.put('SESSION_SECRET', s, 21600);
+  return s;
+}
+
+function sign_(text) {
+  return Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(text, sessionSecret_())).replace(/=+$/, '');
+}
+
+function makeSession_(me) {
+  const exp = Date.now() + SESSION_HOURS * 3600 * 1000;
+  const body = 'ph1.' + Utilities.base64EncodeWebSafe(JSON.stringify({ e: me.id, n: me.name || '', x: exp }), Utilities.Charset.UTF_8).replace(/=+$/, '');
+  return { session: body + '.' + sign_(body), expiresAt: new Date(exp).toISOString() };
+}
+
+function verifySession_(token) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3 || parts[0] !== 'ph1') throw Core.fail('AUTH_REQUIRED', 'Please sign in.');
+  const body = parts[0] + '.' + parts[1];
+  if (sign_(body) !== parts[2]) throw Core.fail('AUTH_INVALID', 'Your sign-in is not valid. Please sign in again.');
+  let p;
+  try {
+    p = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(parts[1] + '==='.slice((parts[1].length + 3) % 4))).getDataAsString());
+  } catch (err) {
+    throw Core.fail('AUTH_INVALID', 'Your sign-in is not valid. Please sign in again.');
+  }
+  if (!p.x || p.x < Date.now()) throw Core.fail('AUTH_EXPIRED', 'Your 24-hour sign-in has ended. Please sign in again.');
+  return { email: String(p.e || '').toLowerCase(), name: p.n || '' };
+}
+
+/** A session from this app, or (pages opened before the update) a Google sign-in token. */
+function verifyAuth_(token) {
+  return String(token || '').indexOf('ph1.') === 0 ? verifySession_(token) : verifyGoogle_(token);
+}
+
+// ---------------------------------------------------------------- change counter for the 10-second sync
+
+function rev_() {
+  const cache = CacheService.getScriptCache();
+  let r = cache.get('REV');
+  if (!r) {
+    r = PropertiesService.getScriptProperties().getProperty('REV') || '0';
+    cache.put('REV', r, 21600);
+  }
+  return r;
+}
+
+function bumpRev_() {
+  const r = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  PropertiesService.getScriptProperties().setProperty('REV', r);
+  CacheService.getScriptCache().put('REV', r, 21600);
 }
 
 // ---------------------------------------------------------------- Sheets store used by Core

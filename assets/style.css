@@ -394,6 +394,39 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 .composer { display: flex; flex-direction: column; gap: 8px; }
 .composer textarea { border: 1px solid var(--line-strong); background: var(--surface); border-radius: 6px; padding: 8px 10px; min-height: 64px; resize: vertical; width: 100%; }
 .composer .btn { align-self: flex-end; }
+.comp-row { display: flex; align-items: center; gap: 8px; }
+.comp-row .sp { flex: 1; }
+.composer .comp-row .btn { align-self: center; }
+.msg .tx a, .fld-links a { overflow-wrap: anywhere; }
+.msg .mtools { display: inline-flex; gap: 10px; align-items: baseline; margin-left: 10px; }
+.msg .mtools .linkbtn { font-size: 12px; }
+.linkbtn.danger { color: var(--crit); }
+.linkbtn.danger.armed { font-weight: 600; }
+.medit { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.medit textarea { border: 1px solid var(--accent); background: var(--surface); border-radius: 6px; padding: 8px 10px; min-height: 64px; resize: vertical; width: 100%; }
+.fld-links { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12.5px; margin-top: 2px; }
+.photos { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ph { width: 132px; height: 100px; padding: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--surface-2); cursor: zoom-in; position: relative; }
+.ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ph.loading img, .ph.failed img { visibility: hidden; }
+.ph.loading::after, .ph.failed::after { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11.5px; color: var(--ink-3); }
+.ph.loading::after { content: "Loading photo…"; }
+.ph.failed::after { content: "Photo unavailable"; }
+.pend { display: flex; flex-wrap: wrap; gap: 6px; }
+.pend:empty { display: none; }
+.pthumb { position: relative; width: 72px; height: 72px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.pthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pthumb .x { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(0, 0, 0, .6); color: #fff; font-size: 14px; line-height: 20px; padding: 0; cursor: pointer; }
+.lightbox { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 16px; }
+.lightbox[hidden] { display: none; }
+.lightbox .scrim { position: absolute; inset: 0; background: rgba(5, 10, 14, .82); }
+.lightbox figure { position: relative; margin: 0; display: flex; flex-direction: column; gap: 10px; max-width: 100%; max-height: 100%; }
+.lightbox img { max-width: min(1400px, 100%); max-height: calc(100vh - 90px); object-fit: contain; border-radius: 6px; background: #fff; }
+.lightbox figcaption { display: flex; gap: 8px; align-items: center; color: #fff; font-size: 13px; }
+.lightbox figcaption span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.af-bar { margin: 14px 0; }
+.af-bar select { max-width: 220px; }
+.t tr[data-act="open"] { cursor: pointer; }
 
 /* ---------- sign-in ---------- */
 .signin { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; background: var(--side); }
